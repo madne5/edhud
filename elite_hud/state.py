@@ -122,19 +122,28 @@ class SystemState:
 
 
 #: Frontier's numbers, overridden by the [carrier] config section. The journal
-#: never reports a cooldown, so these are what the HUD derives it from.
+#: never reports a cooldown anywhere -- not in CarrierStats, not in any event --
+#: so the HUD has to derive it.
+#:
+#: The wiki states a 5-minute cooldown after the jump completes; the two mature
+#: third-party implementations (EDDI and the Elite Dangerous Carrier Manager)
+#: both measured 290 seconds and both count it from DepartureTime rather than
+#: from arrival. 290 is used here: it matches what the game actually enforces,
+#: and being ten seconds early is a far smaller annoyance than being late.
 DEFAULT_CARRIER_SPOOL_SECONDS = 15 * 60.0
-DEFAULT_CARRIER_COOLDOWN_SECONDS = 5 * 60.0
+DEFAULT_CARRIER_COOLDOWN_SECONDS = 290.0
+
+#: DepartureTime is when the carrier departs, not when it arrives: the jump runs
+#: through seven phases and finishes at about +72 seconds (EDDI's measurement;
+#: the wiki's timeline ends the exit phase at +1:10). Used when a CarrierJump
+#: event is the only thing available, because its timestamp is the arrival.
+DEFAULT_CARRIER_JUMP_SECONDS = 72.0
+
+#: Cancelling a scheduled jump imposes its own, much shorter, cooldown.
+DEFAULT_CARRIER_CANCEL_SECONDS = 60.0
 
 #: How long "ready to jump" is worth showing once the cooldown has elapsed.
 CARRIER_READY_DISPLAY_SECONDS = 60.0
-
-#: Departure is not arrival. Frontier's own timeline runs the jump through seven
-#: phases and ends with "Exiting hyperspace portal" at about +1:10 after
-#: departure, and the cooldown is measured from the jump completing. Only needed
-#: when there is no CarrierJump event to read the exact moment from.
-#: Source: Elite Dangerous wiki, Drake-Class Carrier -> jump timeline.
-CARRIER_JUMP_COMPLETION_SECONDS = 70.0
 
 
 @dataclass(slots=True)
@@ -151,13 +160,11 @@ class CarrierState:
     departure_inferred: bool = False
     #: Last system the carrier was reported in.
     last_system: str = ""
-    #: When the carrier last arrived somewhere, which is what the cooldown after
-    #: a jump is measured from.
-    last_jump: datetime | None = None
-    #: Seconds the carrier must wait after arriving before it can jump again.
-    cooldown_seconds: float = DEFAULT_CARRIER_COOLDOWN_SECONDS
-    #: Added to a departure time to approximate the completion of the jump.
-    completion_seconds: float = CARRIER_JUMP_COMPLETION_SECONDS
+    #: Absolute moment the carrier may be sent somewhere again. An absolute
+    #: time rather than "last jump plus a duration", because the events that
+    #: establish it (a request, an arrival, a cancellation) each name a different
+    #: starting point, and taking the latest is what keeps them consistent.
+    ready_at: datetime | None = None
     #: How long "ready" stays on screen once the cooldown has elapsed.
     ready_display_seconds: float = CARRIER_READY_DISPLAY_SECONDS
 
@@ -181,30 +188,41 @@ class CarrierState:
         return remaining
 
     def seconds_until_ready(self, now: datetime | None = None) -> float | None:
-        """Seconds left of the post-jump cooldown, or ``None`` when ready.
+        """Seconds left of the cooldown, or ``None`` when it may jump now.
 
-        ``None`` also covers "we have never seen this carrier jump", because
+        ``None`` also covers "we have never seen this carrier move", because
         there is nothing meaningful to show in that case.
         """
-        if self.last_jump is None or self.cooldown_seconds <= 0:
+        if self.ready_at is None:
             return None
         now = now or utcnow()
-        remaining = self.cooldown_seconds - (now - self.last_jump).total_seconds()
+        remaining = (self.ready_at - now).total_seconds()
         if remaining <= 0:
             return None
         return remaining
 
     def became_ready(self, now: datetime | None = None) -> bool:
         """True briefly after the cooldown ends, so the bar can say "ready"."""
-        if self.last_jump is None or self.cooldown_seconds <= 0:
+        if self.ready_at is None:
             return False
         now = now or utcnow()
-        elapsed = (now - self.last_jump).total_seconds() - self.cooldown_seconds
+        elapsed = (now - self.ready_at).total_seconds()
         return 0 <= elapsed < self.ready_display_seconds
 
-    def record_jump(self, when: datetime | None = None) -> None:
-        """Note that the carrier has just arrived somewhere."""
-        self.last_jump = when or utcnow()
+    def block_until(self, when: datetime, *, replace: bool = False) -> None:
+        """Record the earliest moment a jump may be requested.
+
+        The latest of the known sources normally wins: a request and the matching
+        arrival derive the moment differently but agree to the second, so taking
+        the maximum keeps them consistent whichever is seen first.
+
+        ``replace`` is for a cancellation, which *revokes* the cooldown the
+        request had booked -- the jump never happens, so only the short
+        cancellation cooldown applies. It is safe because the game refuses a new
+        request while a cooldown is running, so the two cannot overlap.
+        """
+        if replace or self.ready_at is None or when > self.ready_at:
+            self.ready_at = when
 
     def settle(self, now: datetime | None = None) -> bool:
         """Advance state that depends on the passage of time.
@@ -219,8 +237,8 @@ class CarrierState:
         now = now or utcnow()
         if now < self.departure:
             return False
-        # The jump ends shortly after departure, not at it.
-        self.record_jump(self.departure + timedelta(seconds=self.completion_seconds))
+        # The jump is under way, so it is no longer "scheduled". The cooldown
+        # itself was already established when the jump was requested.
         self.cancel()
         return True
 
@@ -278,12 +296,16 @@ class GameState:
         value_threshold: int = 7_000_000,
         carrier_spool_seconds: float = DEFAULT_CARRIER_SPOOL_SECONDS,
         carrier_cooldown_seconds: float = DEFAULT_CARRIER_COOLDOWN_SECONDS,
+        carrier_jump_seconds: float = DEFAULT_CARRIER_JUMP_SECONDS,
+        carrier_cancel_seconds: float = DEFAULT_CARRIER_CANCEL_SECONDS,
         carrier_ready_display_seconds: float = CARRIER_READY_DISPLAY_SECONDS,
-        carrier_completion_seconds: float = CARRIER_JUMP_COMPLETION_SECONDS,
     ) -> None:
         self.exobiology = exobiology
         self.value_threshold = value_threshold
         self.carrier_spool_seconds = carrier_spool_seconds
+        self.carrier_cooldown_seconds = carrier_cooldown_seconds
+        self.carrier_jump_seconds = carrier_jump_seconds
+        self.carrier_cancel_seconds = carrier_cancel_seconds
 
         self.commander = ""
         self.ship = ""
@@ -291,11 +313,7 @@ class GameState:
         self.game_mode = ""
         self.credits: int | None = None
         self.system = SystemState()
-        self.carrier = CarrierState(
-            cooldown_seconds=carrier_cooldown_seconds,
-            ready_display_seconds=carrier_ready_display_seconds,
-            completion_seconds=carrier_completion_seconds,
-        )
+        self.carrier = CarrierState(ready_display_seconds=carrier_ready_display_seconds)
 
         self.last_event: str = ""
         self.last_event_at: datetime | None = None
@@ -327,10 +345,7 @@ class GameState:
 
     def reset(self) -> None:
         self.system.clear()
-        self.carrier = CarrierState(
-            cooldown_seconds=self.carrier.cooldown_seconds,
-            ready_display_seconds=self.carrier.ready_display_seconds,
-        )
+        self.carrier = CarrierState(ready_display_seconds=self.carrier.ready_display_seconds)
 
     def settle(self, now: datetime | None = None) -> None:
         """Advance state that depends on the clock; call from the UI loop."""
@@ -380,9 +395,14 @@ class GameState:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
 
     def _on_CarrierJump(self, event: dict) -> list[Alert] | None:
-        # The carrier the commander is aboard has arrived. This is the exact
-        # moment the post-jump cooldown is measured from.
-        self.carrier.record_jump(parse_timestamp(event.get("timestamp")) or utcnow())
+        # This event only exists when the commander was docked at the time, and
+        # its timestamp is the arrival -- which is the jump's duration later than
+        # the departure the cooldown is really measured from.
+        arrived = parse_timestamp(event.get("timestamp"))
+        if arrived is not None:
+            self.carrier.block_until(
+                arrived + timedelta(seconds=self.carrier_cooldown_seconds - self.carrier_jump_seconds)
+            )
         self.carrier.cancel()
         if event.get("StarSystem"):
             self._enter_system(str(event["StarSystem"]), int(event.get("SystemAddress") or 0))
@@ -688,6 +708,12 @@ class GameState:
         else:
             self.carrier.departure_inferred = False
         self.carrier.departure = departure
+        # The cooldown is measured from departure, which is what both EDDI and
+        # the Carrier Manager do; the wiki's "5 minutes after the jump" is the
+        # same window once the jump's own duration is taken into account.
+        self.carrier.block_until(
+            departure + timedelta(seconds=self.carrier_cooldown_seconds)
+        )
         log.info(
             "carrier jump scheduled to %s, departure %s%s",
             target,
@@ -702,6 +728,13 @@ class GameState:
             return
         if not self.carrier.jump_scheduled:
             return
+        cancelled_at = parse_timestamp(event.get("timestamp"))
+        if cancelled_at is not None:
+            # Cancelling imposes its own, much shorter, cooldown.
+            self.carrier.block_until(
+                cancelled_at + timedelta(seconds=self.carrier_cancel_seconds),
+                replace=True,
+            )
         log.info("carrier jump cancelled")
         self.carrier.cancel()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from elite_hud.exobiology import Confidence, ExobiologyTable
@@ -186,13 +186,21 @@ class SystemTrackingTests(unittest.TestCase):
 
 
 class CarrierTests(unittest.TestCase):
+    """Cooldown is derived: the journal never reports one.
+
+    EDDI and the Carrier Manager both measure it from DepartureTime with a
+    290-second constant, and this follows them.
+    """
+
     def setUp(self) -> None:
         self.state = GameState(ExobiologyTable(), carrier_spool_seconds=15 * 60)
 
+    def _request(self, departure: str, requested_at: str = "2026-03-14T20:15:00Z") -> None:
+        self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 1, "SystemName": "Sol",
+                          "DepartureTime": departure, "timestamp": requested_at})
+
     def test_explicit_departure_time_is_used(self) -> None:
-        self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 1,
-                          "SystemName": "Sol", "DepartureTime": "2026-03-14T20:30:00Z",
-                          "timestamp": "2026-03-14T20:15:00Z"})
+        self._request("2026-03-14T20:30:00Z")
         carrier = self.state.carrier
         self.assertTrue(carrier.jump_scheduled)
         self.assertFalse(carrier.departure_inferred)
@@ -203,99 +211,91 @@ class CarrierTests(unittest.TestCase):
         )
 
     def test_missing_departure_time_falls_back_to_the_spool_window(self) -> None:
+        """15 minutes is Frontier's minimum, and only valid for old logs."""
         self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 1, "SystemName": "Sol",
                           "timestamp": "2026-03-14T20:15:00Z"})
         carrier = self.state.carrier
         self.assertTrue(carrier.departure_inferred)
-        self.assertEqual(
-            carrier.departure,
-            datetime(2026, 3, 14, 20, 30, tzinfo=timezone.utc),
+        self.assertEqual(carrier.departure, datetime(2026, 3, 14, 20, 30, tzinfo=timezone.utc))
+
+    def test_the_cooldown_is_measured_from_departure(self) -> None:
+        self._request("2026-03-14T20:30:00Z")
+        carrier = self.state.carrier
+        # 290 seconds from departure, so ready at 20:34:50.
+        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 34, 50, tzinfo=timezone.utc))
+        self.assertAlmostEqual(
+            carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 30, tzinfo=timezone.utc)),
+            290.0,
+        )
+        self.assertIsNone(
+            carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 35, tzinfo=timezone.utc))
         )
 
-    def test_cancel_clears_the_countdown(self) -> None:
-        self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 1, "SystemName": "Sol",
-                          "DepartureTime": "2026-03-14T20:30:00Z"})
-        self.state.apply({"event": "CarrierJumpCancelled", "CarrierID": 1, "SystemName": "Sol"})
-        self.assertFalse(self.state.carrier.jump_scheduled)
-        self.assertIsNone(self.state.carrier.seconds_until_jump())
+    def test_an_arrival_confirms_the_same_moment(self) -> None:
+        """The two sources must not disagree, whichever is seen first."""
+        from_request = GameState(ExobiologyTable())
+        from_request.apply({"event": "CarrierJumpRequest", "CarrierID": 1, "SystemName": "Sol",
+                            "DepartureTime": "2026-03-14T20:30:00Z"})
 
-    def test_a_passed_departure_becomes_a_jump_and_starts_the_cooldown(self) -> None:
-        """A countdown frozen at 00:00 is useless; the bar moves on instead."""
-        self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 1, "SystemName": "Sol",
-                          "DepartureTime": "2026-03-14T20:30:00Z"})
+        from_arrival = GameState(ExobiologyTable())
+        from_arrival.apply({"event": "CarrierJump", "StarSystem": "Sol", "SystemAddress": 1,
+                            "timestamp": "2026-03-14T20:31:12Z"})  # departure + 72s
+
+        self.assertEqual(from_request.carrier.ready_at, from_arrival.carrier.ready_at)
+        self.assertEqual(from_request.carrier.ready_at,
+                         datetime(2026, 3, 14, 20, 34, 50, tzinfo=timezone.utc))
+
+    def test_cancelling_imposes_a_one_minute_cooldown(self) -> None:
+        self._request("2026-03-14T20:30:00Z")
+        self.state.apply({"event": "CarrierJumpCancelled", "CarrierID": 1,
+                          "timestamp": "2026-03-14T20:20:00Z"})
+        carrier = self.state.carrier
+        self.assertFalse(carrier.jump_scheduled)
+        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 21, tzinfo=timezone.utc))
+
+    def test_a_passed_departure_stops_being_a_countdown(self) -> None:
+        self._request("2026-03-14T20:30:00Z")
         carrier = self.state.carrier
 
         just_before = datetime(2026, 3, 14, 20, 29, tzinfo=timezone.utc)
         self.assertAlmostEqual(carrier.seconds_until_jump(just_before), 60.0)
-        self.assertIsNone(carrier.seconds_until_ready(just_before))
 
         self.state.settle(datetime(2026, 3, 14, 20, 30, 30, tzinfo=timezone.utc))
         self.assertFalse(carrier.jump_scheduled)
         self.assertIsNone(carrier.seconds_until_jump())
-
-        # The jump finishes about 70s after departure and the cooldown runs from
-        # there: at +0:30 the remaining time is 40s of jump plus the full 5:00.
+        # The cooldown keeps running; it is unaffected by the jump starting.
         self.assertAlmostEqual(
             carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 30, 30, tzinfo=timezone.utc)),
-            5 * 60 + 40,
-        )
-        # And it is over at +6:10.
-        self.assertIsNone(
-            carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 36, 20, tzinfo=timezone.utc))
+            260.0,
         )
 
-    def test_the_cooldown_runs_out(self) -> None:
-        self.state.apply({"event": "CarrierJump", "StarSystem": "Sol",
-                          "SystemAddress": 1, "timestamp": "2026-03-14T20:30:00Z"})
-        carrier = self.state.carrier
-
-        during = datetime(2026, 3, 14, 20, 32, tzinfo=timezone.utc)
-        self.assertAlmostEqual(carrier.seconds_until_ready(during), 3 * 60)
-
-        after = datetime(2026, 3, 14, 20, 40, tzinfo=timezone.utc)
-        self.assertIsNone(carrier.seconds_until_ready(after))
-        self.assertFalse(carrier.became_ready(after), "ready is only flagged briefly")
-
-    def test_ready_is_flagged_for_a_short_while(self) -> None:
-        self.state.apply({"event": "CarrierJump", "StarSystem": "Sol",
-                          "SystemAddress": 1, "timestamp": "2026-03-14T20:30:00Z"})
+    def test_ready_is_flagged_only_briefly(self) -> None:
+        self._request("2026-03-14T20:30:00Z")
         carrier = self.state.carrier
         just_ready = datetime(2026, 3, 14, 20, 35, 10, tzinfo=timezone.utc)
         self.assertTrue(carrier.became_ready(just_ready))
+        long_ready = datetime(2026, 3, 14, 21, 30, tzinfo=timezone.utc)
+        self.assertFalse(carrier.became_ready(long_ready))
 
-    def test_no_cooldown_before_the_first_observed_jump(self) -> None:
-        """Otherwise every startup would invent a cooldown out of nothing."""
+    def test_no_cooldown_before_the_carrier_has_moved(self) -> None:
+        """Otherwise every startup would invent one out of nothing."""
         carrier = self.state.carrier
         self.assertIsNone(carrier.seconds_until_ready())
         self.assertFalse(carrier.became_ready())
 
     def test_carrier_location_is_not_mistaken_for_a_jump(self) -> None:
-        """CarrierLocation also fires on login, hours after the last jump."""
+        """It also fires on login, hours after the last jump."""
         self.state.apply({"event": "CarrierLocation", "CarrierID": 1,
                           "StarSystem": "Sol", "SystemAddress": 10477373803,
                           "timestamp": "2026-03-14T21:00:00Z"})
         self.assertIsNone(self.state.carrier.seconds_until_ready())
         self.assertEqual(self.state.carrier.last_system, "Sol")
 
-    def test_a_jump_event_records_the_arrival(self) -> None:
-        self.state.apply({"event": "CarrierJump", "StarSystem": "Sol", "SystemAddress": 1,
-                          "timestamp": "2026-03-14T20:30:00Z"})
-        self.assertEqual(self.state.carrier.last_jump,
-                         datetime(2026, 3, 14, 20, 30, tzinfo=timezone.utc))
-
-    def test_cancellation_for_another_carrier_is_ignored(self) -> None:
-        self.state.apply({"event": "CarrierStats", "CarrierID": 111, "Callsign": "AAA-111"})
-        self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 111, "SystemName": "Sol",
-                          "DepartureTime": "2026-03-14T20:30:00Z"})
-        self.state.apply({"event": "CarrierJumpCancelled", "CarrierID": 222})
-        self.assertTrue(self.state.carrier.jump_scheduled)
-
-    def test_arrival_clears_the_countdown(self) -> None:
-        self.state.apply({"event": "CarrierJumpRequest", "CarrierID": 1, "SystemName": "Sol",
-                          "DepartureTime": "2026-03-14T20:30:00Z"})
-        self.state.apply({"event": "CarrierJump", "StarSystem": "Sol", "SystemAddress": 10477373803})
-        self.assertFalse(self.state.carrier.jump_scheduled)
-        self.assertEqual(self.state.system.name, "Sol")
+    def test_a_cooldown_never_shortens(self) -> None:
+        self._request("2026-03-14T20:30:00Z")
+        carrier = self.state.carrier
+        carrier.block_until(datetime(2026, 3, 14, 20, 20, tzinfo=timezone.utc))
+        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 34, 50, tzinfo=timezone.utc))
 
 
 class RobustnessTests(unittest.TestCase):

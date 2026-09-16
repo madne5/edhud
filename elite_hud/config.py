@@ -120,13 +120,15 @@ class CarrierConfig:
     #: figure is "at least 15 minutes"; only used when a CarrierJumpRequest
     #: carries no DepartureTime (journals older than Update 14).
     spool_minutes: float = 15.0
-    #: How long after arriving a carrier must wait before the next jump can be
-    #: requested. Frontier: a 5-minute cooldown once the jump completes.
-    jump_cooldown_minutes: float = 5.0
-    #: Departure is not arrival: the jump runs through seven phases and finishes
-    #: about 70 seconds later, which is when the cooldown starts. Only used when
-    #: no CarrierJump event was recorded.
-    jump_completion_seconds: float = 70.0
+    #: Cooldown after a jump, counted from DepartureTime. The wiki says five
+    #: minutes; EDDI and the Carrier Manager both measured 290 seconds, which is
+    #: what the game enforces.
+    jump_cooldown_seconds: float = 290.0
+    #: How long the jump itself takes, from DepartureTime to arrival. Only used
+    #: to interpret a CarrierJump event, whose timestamp is the arrival.
+    jump_duration_seconds: float = 72.0
+    #: Cooldown after cancelling a scheduled jump.
+    cancel_cooldown_seconds: float = 60.0
     #: Draw the cooldown segment at all.
     show_cooldown: bool = True
 
@@ -244,8 +246,9 @@ class Config:
 
         carrier = self.carrier
         carrier.spool_minutes = min(120.0, max(0.0, float(carrier.spool_minutes)))
-        carrier.jump_cooldown_minutes = min(120.0, max(0.0, float(carrier.jump_cooldown_minutes)))
-        carrier.jump_completion_seconds = min(600.0, max(0.0, float(carrier.jump_completion_seconds)))
+        carrier.jump_cooldown_seconds = min(3600.0, max(0.0, float(carrier.jump_cooldown_seconds)))
+        carrier.jump_duration_seconds = min(600.0, max(0.0, float(carrier.jump_duration_seconds)))
+        carrier.cancel_cooldown_seconds = min(3600.0, max(0.0, float(carrier.cancel_cooldown_seconds)))
 
         self.overlay.monitor = str(self.overlay.monitor).strip()
 

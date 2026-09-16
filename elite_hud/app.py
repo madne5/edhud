@@ -250,8 +250,9 @@ class HudApp:
             self.table,
             value_threshold=config.alerts.min_value,
             carrier_spool_seconds=config.carrier.spool_minutes * 60.0,
-            carrier_cooldown_seconds=config.carrier.jump_cooldown_minutes * 60.0,
-            carrier_completion_seconds=config.carrier.jump_completion_seconds,
+            carrier_cooldown_seconds=config.carrier.jump_cooldown_seconds,
+            carrier_jump_seconds=config.carrier.jump_duration_seconds,
+            carrier_cancel_seconds=config.carrier.cancel_cooldown_seconds,
         )
         self.sound = SoundPlayer(config.alerts.sound_file, config.alerts.volume)
         self.sound_min_rank = CONFIDENCE_BY_NAME[
