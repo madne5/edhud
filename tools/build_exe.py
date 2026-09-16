@@ -160,7 +160,10 @@ def main() -> int:
     for module in (*EXCLUDED_QT_MODULES, *EXCLUDED_MODULES):
         command += ["--exclude-module", module]
 
-    command.append(str(REPO_ROOT / "elite_hud" / "__main__.py"))
+    # Not elite_hud/__main__.py: PyInstaller executes this file as a script,
+    # where a relative import raises ImportError and a windowed build turns that
+    # into an undismissable error dialog.
+    command.append(str(REPO_ROOT / "tools" / "entrypoint.py"))
 
     print(f"building elite-hud {version}")
     print("running:", " ".join(command))

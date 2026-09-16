@@ -36,6 +36,9 @@ env:
 jobs:
   release:
     runs-on: windows-latest
+    # Generous for a PySide6 build and upload, but bounded: a hung step must not
+    # occupy a runner for the default six hours.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
@@ -135,8 +138,16 @@ jobs:
           $exe = (Resolve-Path "dist\elite-hud\elite-hud.exe").Path
           Write-Host "testing $exe"
 
+          # Bounded: a windowed app that crashes shows an error dialog and never
+          # exits, so -Wait would hang the runner until the job timeout.
           foreach ($arg in @("--version", "--self-check", "--list-genera")) {
-            $proc = Start-Process -FilePath $exe -ArgumentList $arg -Wait -PassThru -NoNewWindow
+            $proc = Start-Process -FilePath $exe -ArgumentList $arg -PassThru -WindowStyle Hidden
+            if (-not $proc.WaitForExit(60000)) {
+              $proc.Kill()
+              $proc.WaitForExit()
+              Write-Error "the frozen build hung on '$arg' (killed after 60s); a windowed PyInstaller app that fails at startup shows a dialog and never exits"
+              exit 1
+            }
             if ($proc.ExitCode -ne 0) {
               Write-Error "the frozen build failed '$arg' with exit code $($proc.ExitCode)"
               exit 1

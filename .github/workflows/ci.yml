@@ -46,9 +46,23 @@ jobs:
             libxcb-xinerama0 libfontconfig1
 
       - name: Run the test suite
+        shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests -t . -v
+        run: |
+          set +e
+          python -m unittest discover -s tests -t . -v 2>&1 | tee tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # Each failing test becomes a check annotation, so the failure shows
+            # up in the commit UI instead of being buried in a long log.
+            grep -E '^(FAIL|ERROR): ' tests.log | sort -u | while IFS= read -r line; do
+              echo "::error title=${line}::${line}"
+            done
+            summary=$(grep -cE '^(FAIL|ERROR): ' tests.log)
+            echo "::error title=Test suite failed::${summary} test(s) failed; see the run log"
+          fi
+          exit $status
 
       - name: Check the CLI entry points
         env:
