@@ -42,6 +42,30 @@ FONT_FALLBACKS = ("Consolas", "Cascadia Mono", "DejaVu Sans Mono", "Menlo", "mon
 
 ELLIPSIS = "…"
 
+#: Glyph box height as a multiple of the font's cap height. Slightly larger than
+#: the capitals so an icon reads as an icon, not as a stray letter.
+GLYPH_CAPHEIGHT_RATIO = 1.35
+
+
+def cap_height(metrics: QFontMetricsF) -> float:
+    """The font's cap height, with a sane fallback.
+
+    A few fonts report 0, which would collapse every vertical calculation.
+    """
+    height = metrics.capHeight()
+    if height <= 0:
+        return metrics.height() * 0.7
+    return height
+
+
+def glyph_top(baseline: float, cap: float, size: float) -> float:
+    """Top of a glyph box whose centre matches the text's optical centre.
+
+    Text is centred on its cap height, i.e. the middle of the capitals sits at
+    ``baseline - cap / 2``. A glyph placed any other way sits visibly low.
+    """
+    return baseline - cap / 2.0 - size / 2.0
+
 #: An elided elastic span never shrinks below this many characters.
 MIN_ELIDED_CHARS = "XXXXXXXXXX"
 
@@ -76,6 +100,7 @@ class HudWindow(QWidget):
         self._alert_pulse = 0.0
         self._segments: list[Segment] = []
         self._last_size: tuple[int, int] = (0, 0)
+        self._last_position: tuple[int, int] | None = None
 
         self._font, self._bold_font = self._build_fonts()
         self._metrics = QFontMetricsF(self._font)
@@ -84,10 +109,12 @@ class HudWindow(QWidget):
         # Qt can deliver paintEvent before the first rebuild(); seed the layout
         # metrics so painting is always safe.
         height = self._metrics.height()
+        cap = cap_height(self._metrics)
         self._padding_x = height * 0.85
         self._padding_y = height * 0.38
-        self._glyph_size = height * 1.02
+        self._glyph_size = cap * GLYPH_CAPHEIGHT_RATIO
         self._glyph_gap = height * 0.34
+        self._plate_radius = height * 0.85
         self._segments = self._compose()
 
         self.setWindowTitle("elite-hud")
@@ -102,6 +129,14 @@ class HudWindow(QWidget):
         self._topmost_timer.timeout.connect(self._reassert_topmost)
         if config.overlay.always_on_top:
             self._topmost_timer.start()
+
+        # Displays can be plugged in, unplugged, or rearranged while the HUD
+        # runs; re-evaluating is cheap and the move only happens when the spot
+        # actually changes.
+        self._screen_timer = QTimer(self)
+        self._screen_timer.setInterval(3000)
+        self._screen_timer.timeout.connect(self._reposition)
+        self._screen_timer.start()
 
     # -- window setup ------------------------------------------------------
 
@@ -385,7 +420,7 @@ class HudWindow(QWidget):
         return width
 
     def _available_width(self) -> float:
-        screen = self._screen()
+        screen = self._target_screen()
         if screen is None:
             return 4096.0
         margins = 2 * max(16, self.config.overlay.offset_x)
@@ -448,12 +483,13 @@ class HudWindow(QWidget):
         cfg = self.config.overlay
         padding_x = self._metrics.height() * 0.85
         padding_y = self._metrics.height() * 0.38
-        glyph_size = self._metrics.height() * 1.02
+        glyph_size = cap_height(self._metrics) * GLYPH_CAPHEIGHT_RATIO
         glyph_gap = self._metrics.height() * 0.34
         self._padding_x = padding_x
         self._padding_y = padding_y
         self._glyph_size = glyph_size
         self._glyph_gap = glyph_gap
+        self._plate_radius = self._metrics.height() * 0.85
 
         width = self._fit()
 
@@ -465,15 +501,95 @@ class HudWindow(QWidget):
             self.resize(total_width, total_height)
             self._reposition()
 
-    def _screen(self):
-        """The screen the mouse is on, falling back to the primary screen."""
+    # These three are the only places the display logic touches Qt, which keeps
+    # the selection rules testable without a real multi-monitor machine.
+    @staticmethod
+    def screens() -> list:
+        """Attached screens, or an empty list where none can be enumerated."""
         try:
-            return QGuiApplication.screenAt(self.cursor().pos()) or QGuiApplication.primaryScreen()
+            return list(QGuiApplication.screens())
         except Exception:  # pragma: no cover - offscreen platforms
-            return QGuiApplication.primaryScreen()
+            return []
 
-    def _reposition(self) -> None:
-        screen = self._screen()
+    @staticmethod
+    def primary_screen():
+        return QGuiApplication.primaryScreen()
+
+    @staticmethod
+    def screen_at(point):
+        return QGuiApplication.screenAt(point)
+
+    def _target_screen(self, setting: str | None = None):
+        """The display the bar should appear on.
+
+        ``overlay.monitor`` selects it: ``primary`` (the default), ``cursor``
+        for the display under the pointer, a zero-based index, or a substring of
+        the display name. Anything that cannot be resolved falls back to the
+        primary display so a typo in the config never hides the HUD.
+        """
+        screens = self.screens()
+        if not screens:
+            return None
+
+        value = (self.config.overlay.monitor if setting is None else setting) or "primary"
+        key = value.strip().lower()
+
+        if key in ("cursor", "mouse", "pointer", "auto"):
+            try:
+                under_cursor = self.screen_at(self.cursor().pos())
+            except Exception:  # pragma: no cover - offscreen platforms
+                under_cursor = None
+            return under_cursor or self.primary_screen()
+
+        if key in ("", "primary", "main", "default"):
+            return self.primary_screen()
+
+        if key.lstrip("+-").isdigit():
+            index = int(key)
+            if 0 <= index < len(screens):
+                return screens[index]
+            log.warning(
+                "overlay.monitor = %s but %d display(s) are attached; using the primary one",
+                value,
+                len(screens),
+            )
+            return self.primary_screen()
+
+        for screen in screens:
+            if key in screen.name().lower():
+                return screen
+        log.warning("no display matches overlay.monitor = %r; using the primary one", value)
+        return self.primary_screen()
+
+    def reposition(self, *, force: bool = False) -> None:
+        """Move the bar now, for callers reacting to a settings change."""
+        self._reposition(force=force)
+
+    def screen_label(self) -> str:
+        """A short description of where the bar currently is."""
+        screen = self._target_screen()
+        if screen is None:
+            return "нет данных"
+        geometry = screen.geometry()
+        return f"{screen.name()} ({geometry.width()}x{geometry.height()})"
+
+    @classmethod
+    def screen_choices(cls) -> list[tuple[str, str]]:
+        """``(value, label)`` pairs for a display picker, primary first."""
+        choices: list[tuple[str, str]] = [("primary", "Основной")]
+        screens = cls.screens()
+        primary = cls.primary_screen() if screens else None
+        for index, screen in enumerate(screens):
+            geometry = screen.geometry()
+            suffix = " — основной" if screen is primary else ""
+            choices.append(
+                (str(index), f"{index}: {screen.name()} {geometry.width()}x{geometry.height()}{suffix}")
+            )
+        choices.append(("cursor", "Тот, где курсор мыши"))
+        return choices
+
+    def _reposition(self, *, force: bool = False) -> None:
+        screen = self._target_screen()
         if screen is None:
             return
         area = screen.availableGeometry()
@@ -491,7 +607,12 @@ class HudWindow(QWidget):
             y = area.bottom() - height - cfg.offset_y
         else:
             y = area.top() + cfg.offset_y
-        self.move(int(x), int(y))
+
+        target = (int(x), int(y))
+        # move() on every tick would flicker; only act when the spot changes.
+        if force or target != self._last_position:
+            self._last_position = target
+            self.move(*target)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
         if not self._segments:
@@ -502,7 +623,7 @@ class HudWindow(QWidget):
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
         rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
-        radius = min(rect.height() / 2.0, self._glyph_size)
+        radius = min(rect.height() / 2.0, self._plate_radius)
 
         if cfg.show_background:
             background = QColor(cfg.background)
@@ -522,7 +643,8 @@ class HudWindow(QWidget):
             painter.drawRoundedRect(rect, radius, radius)
 
         x = self._padding_x
-        baseline = (self.height() + self._metrics.capHeight()) / 2.0
+        cap = cap_height(self._metrics)
+        baseline = (self.height() + cap) / 2.0
 
         for segment in self._segments:
             x += segment.lead
@@ -531,7 +653,7 @@ class HudWindow(QWidget):
                 draw_glyph(
                     painter,
                     x,
-                    baseline - self._metrics.capHeight() * 0.78,
+                    glyph_top(baseline, cap, self._glyph_size),
                     self._glyph_size,
                     segment.glyph,
                     glyph_color,
@@ -555,6 +677,7 @@ class HudWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._topmost_timer.stop()
+        self._screen_timer.stop()
         super().closeEvent(event)
 
 

@@ -19,6 +19,7 @@ from .config import (
     Config,
     ensure_config_file,
     resolve_config_path,
+    set_config_value,
     set_update_mode,
 )
 from .exobiology import Confidence, ExobiologyTable
@@ -269,6 +270,7 @@ class HudApp:
             on_before_apply=self._release_instance_guard,
         )
         self._update_actions: dict[str, object] = {}
+        self._monitor_group = None
         self._update_mode_group = None
         self._quit_after_update = False
 
@@ -473,6 +475,8 @@ class HudApp:
         menu.addAction("Показать / скрыть HUD", self._toggle_hud)
         menu.addAction("Открыть config.toml", self._open_config)
         menu.addSeparator()
+        self._build_monitor_menu(menu)
+        menu.addSeparator()
         self._build_update_menu(menu, app)
         menu.addSeparator()
         menu.addAction("Выход", app.quit)
@@ -480,6 +484,37 @@ class HudApp:
         tray.setContextMenu(menu)
         tray.show()
         self.tray = tray
+
+    def _build_monitor_menu(self, menu) -> None:
+        """Let the user pick a display without editing the config by hand."""
+        from PySide6.QtGui import QActionGroup
+
+        from .overlay.hud import HudWindow
+
+        monitors = menu.addMenu("Монитор")
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        current = self.config.overlay.monitor
+        for value, label in HudWindow.screen_choices():
+            action = monitors.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.triggered.connect(lambda _checked=False, v=value: self._set_monitor(v))
+            group.addAction(action)
+        self._monitor_group = group
+
+    def _set_monitor(self, value: str) -> None:
+        self.config.overlay.monitor = value
+        self.config.validate()
+        path = default_config_path(self.options.config)
+        persisted = set_config_value(path, "overlay", "monitor", value)
+        if self.hud is not None:
+            self.hud.reposition(force=True)
+        note = "" if persisted else " (не сохранилось в config.toml)"
+        where = self.hud.screen_label() if self.hud is not None else value
+        log.info("HUD monitor set to %s%s", value, note)
+        if self.tray is not None:
+            self.tray.showMessage("elite-hud", f"HUD на мониторе: {where}{note}")
 
     def _build_update_menu(self, menu, app) -> None:
         from PySide6.QtGui import QActionGroup

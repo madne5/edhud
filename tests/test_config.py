@@ -16,6 +16,8 @@ from elite_hud.config import (
     ensure_config_file,
     is_writable_dir,
     resolve_config_path,
+    set_config_value,
+    set_update_mode,
     user_config_dir,
 )
 
@@ -193,6 +195,79 @@ class RealPermissionsTests(unittest.TestCase):
             self.assertFalse(ensure_config_file(path / "config.toml"))
         finally:
             os.chmod(path, stat.S_IRWXU)
+
+
+class MonitorSettingTests(unittest.TestCase):
+    def test_default_is_the_primary_display(self) -> None:
+        self.assertEqual(Config().overlay.monitor, "primary")
+
+    def test_the_value_survives_a_save_load_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            text = Config().to_toml().replace('monitor = "primary"', 'monitor = "1"')
+            path.write_text(text, encoding="utf-8")
+            self.assertEqual(Config.load(path).overlay.monitor, "1")
+
+
+class ConfigEditorTests(unittest.TestCase):
+    """Editing one key must not disturb the rest of the file.
+
+    Rewriting the whole file from the defaults would discard whatever comments
+    the user added, so the editor touches a single line.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "config.toml"
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_edits_an_existing_key(self) -> None:
+        self.path.write_text(
+            "# my comment\n[overlay]\nmonitor = \"primary\"\nfont_size = 14\n",
+            encoding="utf-8",
+        )
+        self.assertTrue(set_config_value(self.path, "overlay", "monitor", "2"))
+        text = self.path.read_text(encoding="utf-8")
+        self.assertIn('monitor = "2"', text)
+        self.assertIn("# my comment", text)
+        self.assertIn("font_size = 14", text)
+
+    def test_appends_a_missing_key_to_an_existing_section(self) -> None:
+        self.path.write_text("[overlay]\nfont_size = 14\n", encoding="utf-8")
+        self.assertTrue(set_config_value(self.path, "overlay", "monitor", "1"))
+        self.assertEqual(Config.load(self.path).overlay.monitor, "1")
+        self.assertEqual(Config.load(self.path).overlay.font_size, 14)
+
+    def test_creates_a_missing_section(self) -> None:
+        self.path.write_text("[alerts]\nmin_value = 5\n", encoding="utf-8")
+        self.assertTrue(set_config_value(self.path, "overlay", "monitor", "1"))
+        loaded = Config.load(self.path)
+        self.assertEqual(loaded.overlay.monitor, "1")
+        self.assertEqual(loaded.alerts.min_value, 5)
+
+    def test_does_not_touch_the_same_key_in_another_section(self) -> None:
+        self.path.write_text(
+            '[overlay]\nmonitor = "primary"\n\n[update]\nmode = "install"\n',
+            encoding="utf-8",
+        )
+        self.assertTrue(set_config_value(self.path, "update", "mode", "off"))
+        loaded = Config.load(self.path)
+        self.assertEqual(loaded.update.mode, "off")
+        self.assertEqual(loaded.overlay.monitor, "primary")
+
+    def test_the_result_still_parses_as_toml(self) -> None:
+        self.path.write_text(Config().to_toml(), encoding="utf-8")
+        self.assertTrue(set_config_value(self.path, "overlay", "monitor", "1"))
+        tomllib.loads(self.path.read_text(encoding="utf-8"))  # must not raise
+
+    def test_a_missing_file_is_reported_not_raised(self) -> None:
+        self.assertFalse(set_config_value(Path(self._tmp.name) / "absent.toml", "overlay", "monitor", "1"))
+
+    def test_set_update_mode_still_works(self) -> None:
+        self.path.write_text(Config().to_toml(), encoding="utf-8")
+        self.assertTrue(set_update_mode(self.path, "notify"))
+        self.assertEqual(Config.load(self.path).update.mode, "notify")
+        self.assertFalse(set_update_mode(self.path, "nonsense"))
 
 
 class EnsureConfigTests(unittest.TestCase):

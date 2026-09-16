@@ -52,6 +52,12 @@ class OverlayConfig:
     enabled: bool = True
     #: "top-center", "top-left", "top-right", "bottom-center"
     position: str = "top-center"
+    #: Which display to appear on:
+    #:   primary -- the primary display (default)
+    #:   cursor  -- the display the mouse pointer is on
+    #:   0, 1, … -- a display by zero-based index
+    #:   anything else -- matched against the display name
+    monitor: str = "primary"
     #: Distance from the screen edge, in pixels.
     offset_y: int = 4
     offset_x: int = 0
@@ -206,6 +212,8 @@ class Config:
         update.timeout_seconds = min(120.0, max(3.0, float(update.timeout_seconds)))
         update.repo = update.repo.strip().strip("/")
 
+        self.overlay.monitor = str(self.overlay.monitor).strip()
+
     def to_toml(self) -> str:
         lines: list[str] = [
             "# elite-hud configuration",
@@ -292,12 +300,19 @@ def _merge(target: Any, raw: Any) -> None:
 
 
 def set_update_mode(path: Path, mode: str) -> bool:
-    """Rewrite ``[update] mode`` in place, preserving comments and layout.
-
-    Returns False when the file is missing or the edit could not be written.
-    """
+    """Rewrite ``[update] mode`` in place, preserving comments and layout."""
     if mode not in VALID_UPDATE_MODES:
         return False
+    return set_config_value(path, "update", "mode", mode)
+
+
+def set_config_value(path: Path, section: str, key: str, value: str) -> bool:
+    """Set one key in one section, in place, keeping comments and layout.
+
+    Rewriting the whole file from ``to_toml`` would discard the comments a user
+    added, so this edits the single line instead. Returns False when the file is
+    missing or the edit could not be written.
+    """
     if not path.is_file():
         return False
     try:
@@ -305,33 +320,33 @@ def set_update_mode(path: Path, mode: str) -> bool:
     except OSError:
         return False
 
-    section = ""
+    current_section = ""
     inserted = False
     found_section = False
     for index, raw in enumerate(lines):
         stripped = raw.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            section = stripped[1:-1].strip()
-            if section == "update":
+            current_section = stripped[1:-1].strip()
+            if current_section == section:
                 found_section = True
             continue
-        if section != "update" or stripped.startswith("#"):
+        if current_section != section or stripped.startswith("#"):
             continue
-        key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
-        if key == "mode":
-            lines[index] = f'mode = "{mode}"'
+        existing = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        if existing == key:
+            lines[index] = f'{key} = "{value}"'
             inserted = True
             break
 
     if not inserted:
         if not found_section:
-            lines += ["", "[update]"]
-        lines.append(f'mode = "{mode}"')
+            lines += ["", f"[{section}]"]
+        lines.append(f'{key} = "{value}"')
 
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError as exc:
-        log.warning("cannot persist the update mode: %s", exc)
+        log.warning("cannot persist %s.%s: %s", section, key, exc)
         return False
     return True
 

@@ -10,6 +10,7 @@ replay_history = true
 [overlay]
 enabled = true
 position = "top-center"
+monitor = "primary"
 offset_y = 4
 offset_x = 0
 font_family = "Consolas"

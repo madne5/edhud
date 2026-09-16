@@ -52,7 +52,7 @@ def _qt_probe() -> str | None:
 
 QT_SKIP_REASON: str | None
 try:  # pragma: no cover - exercised only when PySide6 is installed
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QRect, Qt
     from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication
 except ImportError as exc:  # pragma: no cover
@@ -94,6 +94,21 @@ def pixel_counts(image: QImage) -> "Counter[tuple[int, int, int]]":
             if ((argb >> 24) & 0xFF) > 40:
                 counts[((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)] += 1
     return counts
+
+
+def column_extent(image: QImage, x_from: int, x_to: int) -> tuple[int, int] | None:
+    """Vertical span of painted pixels between two columns, or None if empty."""
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    top: int | None = None
+    bottom: int | None = None
+    for y in range(image.height()):
+        for x in range(max(0, x_from), min(image.width(), x_to)):
+            if ((image.pixel(x, y) >> 24) & 0xFF) > 60:
+                top = y if top is None else min(top, y)
+                bottom = y if bottom is None else max(bottom, y)
+    if top is None or bottom is None:
+        return None
+    return top, bottom
 
 
 def rgb(color: QColor) -> tuple[int, int, int]:
@@ -412,6 +427,62 @@ class HudRenderTests(unittest.TestCase):
         self.assertNotIn("…", hud.bar_text())
         hud.close()
 
+    def test_glyphs_are_vertically_centred_on_the_text(self) -> None:
+        """Icons used to sit visibly low, level with the text descenders.
+
+        The glyph box was sized from the line height and offset by a fraction of
+        the cap height, which put its centre about 0.45 of a cap height below
+        the text's optical centre -- roughly four pixels at the default size.
+        """
+        config = Config()
+        config.overlay.segments = ["system"]
+        # The plate spans every column at full height, which would make both
+        # measurements identical and the test meaningless.
+        config.overlay.show_background = False
+        state = make_state(config)
+        state.system.name = "Sol"  # short, so nothing is elided
+
+        hud = self._hud(config, state)
+        image = hud.grab().toImage()
+        padding = hud._padding_x  # noqa: SLF001 - the layout under test
+        glyph_size = hud._glyph_size  # noqa: SLF001
+        glyph_gap = hud._glyph_gap  # noqa: SLF001
+        width = hud.width()
+        hud.close()
+
+        # Columns covered by the first glyph, then by the text that follows it.
+        glyph_cols = (int(padding) + 2, int(padding + glyph_size) - 2)
+        text_cols = (int(padding + glyph_size + glyph_gap) + 1, width - int(padding) - 1)
+
+        glyph_span = column_extent(image, *glyph_cols)
+        text_span = column_extent(image, *text_cols)
+        self.assertIsNotNone(glyph_span, "the glyph painted nothing")
+        self.assertIsNotNone(text_span, "no text was painted")
+        assert glyph_span is not None and text_span is not None
+
+        glyph_centre = (glyph_span[0] + glyph_span[1]) / 2.0
+        text_centre = (text_span[0] + text_span[1]) / 2.0
+        self.assertLess(
+            abs(glyph_centre - text_centre),
+            2.5,
+            f"glyph centre {glyph_centre} vs text centre {text_centre} "
+            f"(glyph span {glyph_span}, text span {text_span})",
+        )
+
+    def test_glyphs_are_not_larger_than_the_capitals(self) -> None:
+        """A glyph sized from the line height looks oversized next to text."""
+        from PySide6.QtGui import QFontMetricsF
+
+        config = Config()
+        hud = self._hud(config, make_state(config))
+        metrics = QFontMetricsF(hud._font)  # noqa: SLF001
+        glyph_size = hud._glyph_size  # noqa: SLF001
+        hud.close()
+
+        cap = metrics.capHeight() or metrics.height() * 0.7
+        self.assertLess(glyph_size, metrics.height(), "the glyph fills the whole line box")
+        self.assertGreater(glyph_size, cap * 0.9, "the glyph is smaller than the capitals")
+
     def test_glyphs_can_be_switched_off(self) -> None:
         config = Config()
         config.overlay.show_glyphs = False
@@ -455,6 +526,125 @@ class GlyphTests(unittest.TestCase):
         painter.end()
         painted, _ = opaque_pixels(pixmap.toImage())
         self.assertEqual(painted, 0)
+
+
+class FakeScreen:
+    """Just enough of QScreen for the selection rules."""
+
+    def __init__(self, name: str, x: int = 0, y: int = 0, w: int = 1920, h: int = 1080) -> None:
+        self._name = name
+        self._geometry = QRect(x, y, w, h)
+
+    def name(self) -> str:
+        return self._name
+
+    def geometry(self) -> QRect:
+        return self._geometry
+
+    def availableGeometry(self) -> QRect:
+        return self._geometry
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class MonitorSelectionTests(unittest.TestCase):
+    """The HUD used to follow the mouse pointer, which on a two-monitor desk
+    routinely put it on the display the game was not running on."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, monitor: str, screens: list, primary=None, cursor=None):
+        from unittest import mock
+
+        from elite_hud.overlay.hud import HudWindow
+
+        config = Config()
+        config.overlay.monitor = monitor
+        hud = HudWindow(config, make_state(config))
+        self.addCleanup(hud.close)
+
+        fallback = primary if primary is not None else (screens[0] if screens else None)
+        for patcher in (
+            mock.patch.object(HudWindow, "screens", staticmethod(lambda: list(screens))),
+            mock.patch.object(HudWindow, "primary_screen", staticmethod(lambda: fallback)),
+            mock.patch.object(HudWindow, "screen_at", staticmethod(lambda point: cursor)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return hud
+
+    def test_primary_is_the_default(self) -> None:
+        first = FakeScreen("DISPLAY-A")
+        second = FakeScreen("DISPLAY-B")
+        hud = self._hud("primary", [first, second], primary=second)
+        self.assertIs(hud._target_screen(), second)
+
+    def test_an_index_selects_by_position(self) -> None:
+        screens = [FakeScreen("A"), FakeScreen("B"), FakeScreen("C")]
+        self.assertIs(self._hud("1", screens)._target_screen(), screens[1])
+        self.assertIs(self._hud("2", screens)._target_screen(), screens[2])
+
+    def test_a_name_fragment_selects_by_name(self) -> None:
+        screens = [FakeScreen("DELL U2720Q"), FakeScreen("LG HDR 4K")]
+        self.assertIs(self._hud("lg hdr", screens)._target_screen(), screens[1])
+        self.assertIs(self._hud("dell", screens)._target_screen(), screens[0])
+
+    def test_cursor_follows_the_pointer_and_falls_back(self) -> None:
+        screens = [FakeScreen("A"), FakeScreen("B")]
+        self.assertIs(self._hud("cursor", screens, cursor=screens[1])._target_screen(), screens[1])
+        # Pointer off any display: fall back to the primary one.
+        self.assertIs(
+            self._hud("cursor", screens, primary=screens[0], cursor=None)._target_screen(),
+            screens[0],
+        )
+
+    def test_an_out_of_range_index_falls_back_to_primary(self) -> None:
+        screens = [FakeScreen("A"), FakeScreen("B")]
+        hud = self._hud("7", screens, primary=screens[1])
+        self.assertIs(hud._target_screen(), screens[1])
+
+    def test_an_unknown_name_falls_back_to_primary(self) -> None:
+        screens = [FakeScreen("A"), FakeScreen("B")]
+        hud = self._hud("nonexistent display", screens, primary=screens[1])
+        self.assertIs(hud._target_screen(), screens[1])
+
+    def test_no_screens_is_survivable(self) -> None:
+        self.assertIsNone(self._hud("primary", [])._target_screen())
+
+    def test_the_bar_lands_inside_the_chosen_display(self) -> None:
+        """The behaviour that actually matters, not just the lookup."""
+        left = FakeScreen("LEFT", x=0, y=0, w=1920, h=1080)
+        right = FakeScreen("RIGHT", x=1920, y=0, w=1920, h=1080)
+
+        hud = self._hud("1", [left, right])
+        hud.rebuild()
+        hud.reposition(force=True)
+
+        self.assertGreaterEqual(hud.x(), right.geometry().left())
+        self.assertLessEqual(hud.x() + hud.width(), right.geometry().right() + 1)
+        self.assertLess(hud.y(), right.geometry().height())
+
+        # And switching to the first display actually moves it back.
+        hud.config.overlay.monitor = "0"
+        hud.reposition(force=True)
+        self.assertLess(hud.x(), left.geometry().right())
+
+    def test_screen_choices_offer_primary_indexes_and_cursor(self) -> None:
+        from unittest import mock
+
+        from elite_hud.overlay.hud import HudWindow
+
+        screens = [FakeScreen("A"), FakeScreen("B")]
+        with mock.patch.object(HudWindow, "screens", staticmethod(lambda: screens)), \
+             mock.patch.object(HudWindow, "primary_screen", staticmethod(lambda: screens[0])):
+            choices = HudWindow.screen_choices()
+
+        values = [value for value, _ in choices]
+        self.assertEqual(values, ["primary", "0", "1", "cursor"])
+        self.assertIn("A", choices[1][1])
 
 
 class PreviewFixtureTests(unittest.TestCase):
