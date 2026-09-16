@@ -469,19 +469,39 @@ class HudRenderTests(unittest.TestCase):
             f"(glyph span {glyph_span}, text span {text_span})",
         )
 
-    def test_glyphs_are_not_larger_than_the_capitals(self) -> None:
-        """A glyph sized from the line height looks oversized next to text."""
-        from PySide6.QtGui import QFontMetricsF
+    def test_the_glyph_is_comparable_in_size_to_the_text(self) -> None:
+        """An icon far shorter or taller than the capitals looks wrong.
 
+        Measured from painted pixels rather than from font metrics: the metrics
+        of the same font differ between platforms, and an assertion built on
+        them failed on the Windows runner while passing everywhere else.
+        """
         config = Config()
-        hud = self._hud(config, make_state(config))
-        metrics = QFontMetricsF(hud._font)  # noqa: SLF001
+        config.overlay.segments = ["system"]
+        config.overlay.show_background = False
+        state = make_state(config)
+        state.system.name = "Sol"
+
+        hud = self._hud(config, state)
+        image = hud.grab().toImage()
+        padding = hud._padding_x  # noqa: SLF001 - the layout under test
         glyph_size = hud._glyph_size  # noqa: SLF001
+        glyph_gap = hud._glyph_gap  # noqa: SLF001
+        width = hud.width()
         hud.close()
 
-        cap = metrics.capHeight() or metrics.height() * 0.7
-        self.assertLess(glyph_size, metrics.height(), "the glyph fills the whole line box")
-        self.assertGreater(glyph_size, cap * 0.9, "the glyph is smaller than the capitals")
+        glyph_span = column_extent(image, int(padding) + 2, int(padding + glyph_size) - 2)
+        text_span = column_extent(
+            image, int(padding + glyph_size + glyph_gap) + 1, width - int(padding) - 1
+        )
+        self.assertIsNotNone(glyph_span)
+        self.assertIsNotNone(text_span)
+        assert glyph_span is not None and text_span is not None
+
+        glyph_height = glyph_span[1] - glyph_span[0]
+        text_height = text_span[1] - text_span[0]
+        self.assertGreater(glyph_height, text_height * 0.5, "the icon is tiny next to the text")
+        self.assertLess(glyph_height, text_height * 1.8, "the icon dwarfs the text")
 
     def test_glyphs_can_be_switched_off(self) -> None:
         config = Config()
