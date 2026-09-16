@@ -1,0 +1,68 @@
+# elite-hud configuration
+# Every key here is optional; delete a line to fall back to the default.
+
+[journal]
+path = ""
+poll_interval = 0.75
+history_days = 7
+replay_history = true
+
+[overlay]
+enabled = true
+position = "top-center"
+offset_y = 4
+offset_x = 0
+font_family = "Consolas"
+font_size = 13
+opacity = 0.92
+click_through = true
+always_on_top = true
+refresh_hz = 10.0
+background = "#0b0f14"
+background_alpha = 165
+foreground = "#d8e2ef"
+accent = "#ff9d2e"
+danger = "#ff5555"
+success = "#5ee08a"
+segments = ["carrier", "system", "fss", "bio"]
+show_background = true
+show_glyphs = true
+
+[overlay.labels]
+carrier = "ФК"
+bodies = "тел"
+fss = "FSS"
+bio = "БИО"
+bio_body = "тел"
+at_least = "≥"
+waiting = "ожидание журнала"
+no_system = "нет данных"
+
+[alerts]
+min_value = 7000000
+sound_enabled = true
+sound_file = ""
+volume = 0.8
+sound_min_confidence = "guaranteed"
+display_seconds = 8.0
+desktop_notification = false
+
+[update]
+enabled = true
+mode = "install"
+repo = "madne5/edhud"
+token = ""
+check_on_start = true
+check_interval_hours = 6.0
+include_prerelease = false
+asset = "any"
+timeout_seconds = 15.0
+keep_downloads = false
+
+[logging]
+level = "INFO"
+file = ""
+
+[exobiology.values]
+# Override individual species payouts when Frontier rebalances them.
+# "Stratum Tectonicas" = 19010800

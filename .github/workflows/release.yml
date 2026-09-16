@@ -1,0 +1,165 @@
+# Builds and publishes a release when a version tag is pushed.
+#
+#     git tag v0.2.0 && git push origin v0.2.0
+#
+# The runner produces two artifacts:
+#   * elite-hud-setup-<version>.exe  -- Inno Setup installer (the auto-updater
+#     downloads this one for an installed copy)
+#   * elite-hud-<version>-win64.zip  -- portable folder (used by a portable copy)
+# plus SHA256SUMS.txt, which the in-app updater verifies before installing.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.2.0"
+        required: true
+        type: string
+
+# contents: write is what `gh release create` needs.
+#
+# Caveat: if the tagged commit touched .github/workflows/, GitHub refuses to
+# authorise GITHUB_TOKEN for that release and the API answers 404. That cannot
+# be fixed from inside the workflow -- re-run it from a commit that leaves the
+# workflow files alone, or attach the assets by hand.
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Resolve the version and refuse tag/package mismatches
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $tagVersion = $tag.TrimStart('v')
+          $match = Select-String -Path "elite_hud/__init__.py" -Pattern '__version__\s*=\s*"([^"]+)"'
+          if (-not $match) { Write-Error "cannot read __version__ from elite_hud/__init__.py"; exit 1 }
+          $pkgVersion = $match.Matches[0].Groups[1].Value
+          if ($tagVersion -ne $pkgVersion) {
+            Write-Error "tag '$tag' does not match __version__ '$pkgVersion' -- bump the version first"
+            exit 1
+          }
+          "VERSION=$tagVersion"      >> $env:GITHUB_ENV
+          "TAG=$tag"                 >> $env:GITHUB_ENV
+          Write-Host "releasing elite-hud $tagVersion"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Run the test suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Generate the application icon
+        run: python tools/make_icon.py
+
+      - name: Build the executable
+        run: python tools/build_exe.py --windowed
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host "Inno Setup is not preinstalled; installing via Chocolatey"
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) { Write-Error "ISCC.exe not found"; exit 1 }
+          "path=$iscc" >> $env:GITHUB_OUTPUT
+          & $iscc /? | Select-Object -First 1
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          & "${{ steps.inno.outputs.path }}" "/DAppVersion=$env:VERSION" "installer\elite-hud.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist\*.exe | Format-Table Name, Length
+
+      - name: Package the portable build
+        shell: pwsh
+        run: |
+          $zip = "dist\elite-hud-$env:VERSION-win64.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path "dist\elite-hud\*" -DestinationPath $zip -CompressionLevel Optimal
+          Get-Item $zip | Format-Table Name, Length
+
+      - name: Compute SHA-256 checksums
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem dist -File |
+            Where-Object { $_.Extension -in '.exe', '.zip' } |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  $($_.Name)"
+            }
+          $lines | Set-Content -Path dist\SHA256SUMS.txt -Encoding ascii
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Smoke-test the frozen executable
+        shell: pwsh
+        run: |
+          # Offscreen so the check runs without a desktop session.
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $exe = "dist\elite-hud\elite-hud.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "the frozen build cannot report its version"; exit 1 }
+          & $exe --list-genera | Select-Object -First 5
+          if ($LASTEXITCODE -ne 0) { Write-Error "the frozen build cannot read its bundled data"; exit 1 }
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $assets = @(
+            "dist\elite-hud-setup-$env:VERSION.exe",
+            "dist\elite-hud-$env:VERSION-win64.zip",
+            "dist\SHA256SUMS.txt"
+          )
+          foreach ($asset in $assets) {
+            if (-not (Test-Path $asset)) { Write-Error "missing release asset $asset"; exit 1 }
+          }
+
+          $existing = gh release view $env:TAG --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "release $env:TAG exists; uploading assets with --clobber"
+            gh release upload $env:TAG @assets --clobber
+          } else {
+            # --verify-tag makes a mistyped tag fail loudly instead of creating one.
+            gh release create $env:TAG @assets `
+              --title "elite-hud $env:VERSION" `
+              --generate-notes `
+              --verify-tag
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release view $env:TAG

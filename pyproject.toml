@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elite-hud"
+version = "0.2.0"
+description = "Elite Dangerous journal HUD overlay: fleet carrier jumps, FSS progress and exobiology alerts"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["PySide6>=6.6", "certifi>=2024.2.2"]
+
+[project.scripts]
+elite-hud = "elite_hud.app:main"
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
+[tool.setuptools]
+packages = ["elite_hud", "elite_hud.journal", "elite_hud.overlay"]
+
+[tool.setuptools.package-data]
+elite_hud = ["data/*.json"]

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec
+.pytest_cache/
+
+# Local configuration and generated previews
+config.toml
+tools/preview/
+
+# macOS
+.DS_Store
+
+# Scratch from the research phase. Not needed to build or run anything:
+#   /research/ -- cloned third-party datasets and working scripts
+#   /.csrc/    -- a headless-Chrome profile left by the documentation research.
+#                 It contains Cookies, Login Data and History, so it must never
+#                 be committed. Safe to delete: rm -rf .csrc
+/research/
+/.csrc/
+
+# Editors
+.idea/
+.vscode/

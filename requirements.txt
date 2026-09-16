@@ -1,0 +1,9 @@
+# Runtime dependency: the only one. Everything else is Python's standard library.
+PySide6>=6.6
+
+# CA bundle for HTTPS update checks (system trust stores are unreliable on some
+# Python builds). PyInstaller bundles it into the executable automatically.
+certifi>=2024.2.2
+
+# Optional, only needed to build a standalone .exe:
+#   pyinstaller>=6.0
