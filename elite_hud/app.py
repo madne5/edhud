@@ -350,6 +350,7 @@ class HudApp:
             "applying",
             "applied",
             "error",
+            "busy",
         }:
             status_action.setText(event.message)  # type: ignore[attr-defined]
 

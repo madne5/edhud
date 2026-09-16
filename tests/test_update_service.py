@@ -331,6 +331,91 @@ class TamperTests(ServiceTestCase):
         self.assertIn("контрольная сумма", " ".join(e.message for e in events))
 
 
+class AutomaticModeTests(ServiceTestCase):
+    """Regression: modes "install" and "download" never downloaded anything.
+
+    _check_worker held the busy lock and then called _download_worker, which
+    acquires the same lock. threading.Lock is not reentrant, so the worker
+    blocked forever while still holding it -- and every later request, including
+    a click on the tray's "install" entry, returned silently at the busy check.
+    Nothing in the suite exercised these two modes through check_async(), so it
+    shipped.
+    """
+
+    @staticmethod
+    def _wait_for(predicate, timeout: float = 20.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_install_mode_downloads_and_applies_by_itself(self) -> None:
+        applied: list[str] = []
+        events: list = []
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="install")
+            service.on_event = events.append
+            service.apply = lambda update, path: applied.append(update.version)  # type: ignore[method-assign]
+            service.check_async()
+            waited = self._wait_for(lambda: bool(applied))
+
+        self.assertTrue(
+            waited, f"nothing was installed; events were {[e.kind for e in events]}"
+        )
+        self.assertEqual(applied, ["0.3.0"])
+
+    def test_download_mode_stages_instead_of_applying(self) -> None:
+        applied: list[str] = []
+        events: list = []
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="download")
+            service.on_event = events.append
+            service.apply = lambda update, path: applied.append(update.version)  # type: ignore[method-assign]
+            service.check_async()
+            waited = self._wait_for(lambda: any(e.kind == "staged" for e in events))
+            staged = service.take_pending()
+
+        self.assertTrue(waited, f"nothing was staged; events were {[e.kind for e in events]}")
+        self.assertEqual(applied, [], "a staged update must not be applied yet")
+        self.assertIsNotNone(staged)
+        assert staged is not None
+        self.assertEqual(staged[0], "0.3.0")
+
+    def test_a_click_while_busy_is_acknowledged_not_swallowed(self) -> None:
+        events: list = []
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="notify")
+            service.on_event = events.append
+            result = service.check_now()
+            assert result.update is not None
+
+            service._busy.acquire()  # type: ignore[attr-defined]
+            try:
+                service.download_and_install(result.update)
+            finally:
+                service._busy.release()  # type: ignore[attr-defined]
+
+        self.assertIn(
+            "busy",
+            [event.kind for event in events],
+            "the request was dropped without telling the user anything",
+        )
+
+    def test_an_interactive_check_while_busy_is_reported_too(self) -> None:
+        events: list = []
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="notify")
+            service.on_event = events.append
+            service._busy.acquire()  # type: ignore[attr-defined]
+            try:
+                service.check_async(interact=True)
+            finally:
+                service._busy.release()  # type: ignore[attr-defined]
+        self.assertIn("busy", [event.kind for event in events])
+
+
 class PruneTests(ServiceTestCase):
     def test_keeps_the_newest_packages(self) -> None:
         with TemporaryDirectory() as tmp:

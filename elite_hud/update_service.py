@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 #: ``update.mode`` values that fetch the package by themselves.
 AUTO_DOWNLOAD_MODES = {"download", "install"}
 
+#: How long a download waits for the check to finish before giving up loudly.
+BUSY_ACQUIRE_TIMEOUT = 90.0
+
 PENDING_FILENAME = "pending-update.json"
 
 
@@ -147,6 +150,8 @@ class UpdateService:
     def check_async(self, *, interact: bool = False) -> None:
         if self._busy.locked():
             log.debug("update check already running")
+            if interact:
+                self._emit(UpdateEvent("busy", "проверка обновлений уже идёт…"))
             return
         self._thread = threading.Thread(
             target=self._check_worker,
@@ -159,6 +164,9 @@ class UpdateService:
     # -- workers -----------------------------------------------------------
 
     def _check_worker(self, interact: bool) -> None:
+        pending: UpdateInfo | None = None
+        install_now = False
+
         with self._busy:
             self._emit(UpdateEvent("checking", "проверка обновлений…"))
             try:
@@ -190,7 +198,24 @@ class UpdateService:
                 )
             )
             if self.config.mode in AUTO_DOWNLOAD_MODES:
-                self._download_worker(self.available, install_now=self.config.mode == "install")
+                pending = self.available
+                install_now = self.config.mode == "install"
+
+        # Deliberately outside the `with`: _download_worker acquires the same
+        # lock, so calling it inline deadlocked the worker thread and left the
+        # lock held for the life of the process -- which made the tray's
+        # "install" entry do nothing at all.
+        if pending is not None:
+            self._start_download(pending, install_now=install_now)
+
+    def _start_download(self, update: UpdateInfo, *, install_now: bool) -> None:
+        threading.Thread(
+            target=self._download_worker,
+            args=(update,),
+            kwargs={"install_now": install_now},
+            name="update-download",
+            daemon=True,
+        ).start()
 
     def download_and_install(self, update: UpdateInfo | None = None) -> None:
         """User-triggered download + apply, used by the tray menu."""
@@ -199,19 +224,22 @@ class UpdateService:
             self._emit(UpdateEvent("error", "нет доступного обновления"))
             return
         if self._busy.locked():
-            log.debug("update work already running")
+            log.info("install requested while update work is already running")
+            self._emit(UpdateEvent("busy", "обновление уже загружается, подождите…"))
             return
-        thread = threading.Thread(
-            target=self._download_worker,
-            args=(target,),
-            kwargs={"install_now": True},
-            name="update-download",
-            daemon=True,
-        )
-        thread.start()
+        self._start_download(target, install_now=True)
 
     def _download_worker(self, update: UpdateInfo, *, install_now: bool) -> None:
-        with self._busy:
+        # Bounded rather than `with`: if this lock is ever held for the life of
+        # the process again, the user should see an error instead of an install
+        # button that quietly does nothing.
+        if not self._busy.acquire(timeout=BUSY_ACQUIRE_TIMEOUT):
+            log.error("the update lock is still held after %.0fs", BUSY_ACQUIRE_TIMEOUT)
+            self._emit(
+                UpdateEvent("error", "не удалось начать загрузку: другая задача не завершилась")
+            )
+            return
+        try:
             try:
                 client = self._client()
                 downloader = UpdateDownloader(client, self.download_dir)
@@ -271,6 +299,8 @@ class UpdateService:
                 self._emit(UpdateEvent("error", f"не удалось установить обновление: {exc}"))
                 return
             self._emit(UpdateEvent("applied", "обновление установлено, перезапуск…", update))
+        finally:
+            self._busy.release()
 
     def apply(self, update: UpdateInfo, path: Path) -> None:
         """Hand the downloaded package to the platform-specific installer."""
