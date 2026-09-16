@@ -751,11 +751,18 @@ def apply_portable(root: Path, marker_name: str = UPDATE_MARKER) -> None:
 
 
 def clear_stale_marker() -> bool:
-    """Remove the update marker if a previous swap never finished."""
-    marker = Path(sys.executable).resolve().parent / UPDATE_MARKER
-    if marker.exists():
-        marker.unlink(missing_ok=True)
-        return True
+    """Remove the update marker if a previous swap never finished.
+
+    Only portable copies ever write one, and an installed copy's directory is
+    read-only for the user, so this must never be fatal.
+    """
+    try:
+        marker = Path(sys.executable).resolve().parent / UPDATE_MARKER
+        if marker.exists():
+            marker.unlink(missing_ok=True)
+            return True
+    except OSError as exc:
+        log.debug("cannot remove the update marker: %s", exc)
     return False
 
 

@@ -14,7 +14,13 @@ from pathlib import Path
 
 from . import __version__
 from .alerts import SoundPlayer
-from .config import CONFIG_FILENAME, Config, ensure_config_file, set_update_mode
+from .config import (
+    CONFIG_FILENAME,
+    Config,
+    ensure_config_file,
+    resolve_config_path,
+    set_update_mode,
+)
 from .exobiology import Confidence, ExobiologyTable
 from .installation import SingleInstanceGuard
 from .journal.watcher import JournalWatcher
@@ -125,11 +131,8 @@ def setup_logging(config: Config, verbose: bool) -> None:
 
 
 def default_config_path(explicit: Path | None) -> Path:
-    if explicit is not None:
-        return explicit
-    if getattr(sys, "frozen", False):  # PyInstaller one-file build
-        return Path(sys.executable).resolve().parent / CONFIG_FILENAME
-    return Path(__file__).resolve().parent.parent / CONFIG_FILENAME
+    """Kept as a thin alias so callers need not know about the install shape."""
+    return resolve_config_path(explicit)
 
 
 def print_genera(table: ExobiologyTable, threshold: int) -> None:

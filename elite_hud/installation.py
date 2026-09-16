@@ -18,6 +18,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import is_writable_dir
+
 log = logging.getLogger(__name__)
 
 #: Must match ``AppMutex`` in installer/elite-hud.iss so the installer can tell
@@ -87,7 +89,7 @@ def detect_install() -> InstallInfo:
     try:
         import winreg  # noqa: PLC0415 - Windows only
     except ImportError:  # pragma: no cover - defensive
-        return InstallInfo(PORTABLE, Path(sys.executable).resolve().parent)
+        return _fallback_install_info()
 
     for hive, subkey in _registry_locations():
         try:
@@ -100,7 +102,24 @@ def detect_install() -> InstallInfo:
         log.debug("found Inno Setup install entry (%s, version %s)", folder, version)
         return InstallInfo(INSTALLED, folder, version)
 
-    return InstallInfo(PORTABLE, Path(sys.executable).resolve().parent)
+    return _fallback_install_info()
+
+
+def _fallback_install_info() -> InstallInfo:
+    """Decide without the registry.
+
+    If the install directory is read-only for us, this is an installed copy even
+    when the uninstall entry could not be read. Reporting "portable" would make
+    the updater download a zip it then cannot unpack into Program Files.
+    """
+    executable_dir = Path(sys.executable).resolve().parent
+    if not is_writable_dir(executable_dir):
+        log.debug(
+            "no uninstall entry, but %s is not writable; treating it as installed",
+            executable_dir,
+        )
+        return InstallInfo(INSTALLED, executable_dir)
+    return InstallInfo(PORTABLE, executable_dir)
 
 
 def _query(key, name: str) -> str:

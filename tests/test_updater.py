@@ -544,6 +544,30 @@ class InstallationTests(unittest.TestCase):
 
         self.assertEqual(InstallInfo(INSTALLED).update_preference, "installer")
 
+    def test_a_read_only_directory_is_treated_as_installed(self) -> None:
+        """Without this the updater would fetch a zip it cannot unpack."""
+        import os
+        import stat
+        import sys
+        import tempfile
+
+        from elite_hud.installation import INSTALLED, _fallback_install_info
+
+        if sys.platform != "win32":  # pragma: no cover - Windows behaviour
+            self.skipTest("_fallback_install_info is used on Windows")
+        if os.geteuid() == 0:  # pragma: no cover
+            self.skipTest("running as root")
+        path = Path(tempfile.mkdtemp()) / "elite-hud"
+        path.mkdir()
+        os.chmod(path, stat.S_IRUSR | stat.S_IXUSR)
+        original = sys.executable
+        try:
+            sys.executable = str(path / "elite-hud.exe")
+            self.assertEqual(_fallback_install_info().mode, INSTALLED)
+        finally:
+            sys.executable = original
+            os.chmod(path, stat.S_IRWXU)
+
     def test_elevation_is_not_requested_off_windows(self) -> None:
         import sys
 

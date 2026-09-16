@@ -8,6 +8,7 @@ keeps the runtime dependency list at exactly one package (PySide6).
 from __future__ import annotations
 
 import logging
+import os
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -335,10 +336,71 @@ def set_update_mode(path: Path, mode: str) -> bool:
     return True
 
 
-def ensure_config_file(path: Path) -> bool:
-    """Write a commented default config if none exists. Returns True if created."""
-    if path.exists():
+def user_config_dir() -> Path:
+    """The per-user configuration directory for this platform."""
+    import sys  # noqa: PLC0415
+
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "elite-hud"
+
+
+def is_writable_dir(path: Path) -> bool:
+    """Whether a file can actually be created in ``path``.
+
+    Probes by writing, rather than trusting ``os.access``: on Windows that call
+    is unreliable for directories, and an install under ``Program Files`` looks
+    writable to it while every real write is denied.
+    """
+    probe = path / ".elite-hud-write-test"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+    except OSError:
         return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(Config().to_toml(), encoding="utf-8")
+    return True
+
+
+def resolve_config_path(explicit: "Path | None" = None) -> Path:
+    """Where the configuration lives.
+
+    A portable copy keeps it next to the executable. An installed copy cannot:
+    the installer runs elevated and puts the program in ``Program Files``, while
+    the program itself deliberately runs as the ordinary user, so that directory
+    is read-only for it. In that case the config moves to the per-user location
+    rather than failing to start.
+    """
+    import sys  # noqa: PLC0415
+
+    if explicit is not None:
+        return explicit
+    if getattr(sys, "frozen", False):
+        executable_dir = Path(sys.executable).resolve().parent
+        if is_writable_dir(executable_dir):
+            return executable_dir / CONFIG_FILENAME
+        log.debug("%s is not writable; using the per-user config directory", executable_dir)
+        return user_config_dir() / CONFIG_FILENAME
+    # Running from a source checkout.
+    return Path(__file__).resolve().parent.parent / CONFIG_FILENAME
+
+
+def ensure_config_file(path: Path) -> bool:
+    """Write a commented default config if none exists.
+
+    Returns True when a file was created. Never raises: being unable to write a
+    convenience file must not stop the HUD from starting.
+    """
+    try:
+        if path.exists():
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(Config().to_toml(), encoding="utf-8")
+    except OSError as exc:
+        log.warning("cannot write a default config to %s: %s", path, exc)
+        return False
     return True

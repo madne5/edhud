@@ -7,6 +7,8 @@ actually get painted, which is the closest thing to a screenshot assertion.
 
 from __future__ import annotations
 
+import contextlib
+import math
 import os
 import subprocess
 import sys
@@ -101,6 +103,27 @@ def rgb(color: QColor) -> tuple[int, int, int]:
 def opaque_pixels(image: QImage) -> tuple[int, int]:
     counts = pixel_counts(image)
     return sum(counts.values()), len(counts)
+
+
+@contextlib.contextmanager
+def frozen_pulse():
+    """Pin the alert border's animated opacity.
+
+    The border alpha follows ``sin(time)``, so the exact accent colour is only
+    painted at the peak of the pulse. Without pinning it, a test that looks for
+    that colour passes or fails depending on when the frame happens to be
+    grabbed -- which is exactly how it failed on the Linux runner while passing
+    on macOS.
+    """
+    from elite_hud.overlay import hud as hud_module
+
+    original = hud_module._monotonic  # noqa: SLF001 - the animation clock
+    # sin(6 * pi/12) == sin(pi/2) == 1, i.e. the brightest point of the pulse.
+    hud_module._monotonic = lambda: math.pi / 12  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        hud_module._monotonic = original  # type: ignore[assignment]
 
 
 @unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
@@ -253,6 +276,22 @@ class HudRenderTests(unittest.TestCase):
         self.assertGreater(long.width(), short_width)
         long.close()
 
+    def test_the_alert_border_is_deterministic_when_the_clock_is_pinned(self) -> None:
+        """Same input, same frame: the pulse must not make rendering flaky."""
+        config = Config()
+        alert = Alert(
+            key="k", title="Clypeus", detail="guaranteed", value=16_202_800,
+            confidence=Confidence.GUARANTEED, system="S", body="B",
+        )
+        with frozen_pulse():
+            first = self._hud(config, make_state(config), alert)
+            a = pixel_counts(first.grab().toImage())
+            first.close()
+            second = self._hud(config, make_state(config), alert)
+            b = pixel_counts(second.grab().toImage())
+            second.close()
+        self.assertEqual(a, b, "two frames with the same clock differed")
+
     def test_something_is_actually_painted(self) -> None:
         config = Config()
         state = make_state(config)
@@ -281,13 +320,14 @@ class HudRenderTests(unittest.TestCase):
             key="k", title="Clypeus", detail="guaranteed", value=16_202_800,
             confidence=Confidence.GUARANTEED, system="S", body="B",
         )
-        calm = self._hud(config, make_state(config))
-        calm_accent = pixel_counts(calm.grab().toImage())[rgb(QColor(config.overlay.accent))]
-        calm.close()
+        with frozen_pulse():
+            calm = self._hud(config, make_state(config))
+            calm_accent = pixel_counts(calm.grab().toImage())[rgb(QColor(config.overlay.accent))]
+            calm.close()
 
-        hud = self._hud(config, make_state(config), alert)
-        alert_accent = pixel_counts(hud.grab().toImage())[rgb(QColor(config.overlay.accent))]
-        hud.close()
+            hud = self._hud(config, make_state(config), alert)
+            alert_accent = pixel_counts(hud.grab().toImage())[rgb(QColor(config.overlay.accent))]
+            hud.close()
 
         # The alert draws a full accent border; a calm bar only tints a glyph.
         self.assertGreater(alert_accent, calm_accent + 100)

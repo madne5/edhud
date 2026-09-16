@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import stat
+import sys
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
 
-from elite_hud.config import Config, ensure_config_file
+from elite_hud.config import (
+    Config,
+    ensure_config_file,
+    is_writable_dir,
+    resolve_config_path,
+    user_config_dir,
+)
 
 
 class DefaultsTests(unittest.TestCase):
@@ -98,7 +107,92 @@ class ValidationTests(unittest.TestCase):
             return Config.load(path)
 
 
+class ConfigLocationTests(unittest.TestCase):
+    """Where the config goes depends on how the program was installed.
+
+    The installer runs elevated and places files under Program Files, but the
+    program itself runs as the ordinary user on purpose -- so the install
+    directory is read-only for it. Writing there unconditionally made a fresh
+    install crash on first launch with PermissionError.
+    """
+
+    def setUp(self) -> None:
+        self._frozen = getattr(sys, "frozen", None)
+        self._executable = sys.executable
+        self._had_frozen = hasattr(sys, "frozen")
+        self.addCleanup(self._restore)
+
+    def _restore(self) -> None:
+        if self._had_frozen:
+            sys.frozen = self._frozen  # type: ignore[attr-defined]
+        elif hasattr(sys, "frozen"):
+            del sys.frozen  # type: ignore[attr-defined]
+        sys.executable = self._executable
+
+    @staticmethod
+    def _read_only_dir() -> Path:
+        path = Path(tempfile.mkdtemp()) / "elite-hud"
+        path.mkdir()
+        os.chmod(path, stat.S_IRUSR | stat.S_IXUSR)
+        return path
+
+    def test_is_writable_dir_detects_a_read_only_directory(self) -> None:
+        if os.geteuid() == 0:  # pragma: no cover - root ignores permissions
+            self.skipTest("running as root; permissions are not enforced")
+        path = self._read_only_dir()
+        try:
+            self.assertFalse(is_writable_dir(path))
+            self.assertTrue(is_writable_dir(path.parent))
+        finally:
+            os.chmod(path, stat.S_IRWXU)
+
+    def test_installed_copy_in_a_read_only_directory_uses_the_user_profile(self) -> None:
+        if os.geteuid() == 0:  # pragma: no cover
+            self.skipTest("running as root; permissions are not enforced")
+        install_dir = self._read_only_dir()
+        try:
+            sys.frozen = True  # type: ignore[attr-defined]
+            sys.executable = str(install_dir / "elite-hud.exe")
+            resolved = resolve_config_path(None)
+            self.assertNotEqual(resolved.parent, install_dir)
+            self.assertEqual(resolved.parent, user_config_dir())
+            self.assertEqual(resolved.name, "config.toml")
+        finally:
+            os.chmod(install_dir, stat.S_IRWXU)
+
+    def test_portable_copy_keeps_the_config_next_to_the_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sys.frozen = True  # type: ignore[attr-defined]
+            sys.executable = str(Path(tmp) / "elite-hud.exe")
+            # resolve() on both sides: on macOS /var is a symlink to /private/var
+            # and the implementation resolves the executable path.
+            self.assertEqual(resolve_config_path(None), (Path(tmp) / "config.toml").resolve())
+
+    def test_an_explicit_path_always_wins(self) -> None:
+        explicit = Path("/tmp/somewhere/config.toml")
+        sys.frozen = True  # type: ignore[attr-defined]
+        self.assertEqual(resolve_config_path(explicit), explicit)
+
+    def test_source_checkout_uses_the_repository_root(self) -> None:
+        if hasattr(sys, "frozen"):
+            del sys.frozen  # type: ignore[attr-defined]
+        expected = Path(__file__).resolve().parent.parent / "config.toml"
+        self.assertEqual(resolve_config_path(None), expected)
+
+
 class EnsureConfigTests(unittest.TestCase):
+    def test_an_unwritable_location_is_reported_not_raised(self) -> None:
+        """A convenience file must never stop the HUD from starting."""
+        if os.geteuid() == 0:  # pragma: no cover
+            self.skipTest("running as root; permissions are not enforced")
+        path = Path(tempfile.mkdtemp()) / "ro"
+        path.mkdir()
+        os.chmod(path, stat.S_IRUSR | stat.S_IXUSR)
+        try:
+            self.assertFalse(ensure_config_file(path / "config.toml"))
+        finally:
+            os.chmod(path, stat.S_IRWXU)
+
     def test_creates_once_and_then_leaves_it_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
