@@ -10,11 +10,16 @@ pipeline hangs instead of reporting an error.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import subprocess
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENTRY_SCRIPT = REPO_ROOT / "tools" / "entrypoint.py"
@@ -33,6 +38,65 @@ def run(args: list[str], *, env_extra: dict[str, str] | None = None) -> subproce
         env=env,
         cwd=REPO_ROOT,
     )
+
+
+class CarrierReportTests(unittest.TestCase):
+    """The cooldown is not in the journal, so the only ground truth is what the
+    commander actually did. This tool reads that back."""
+
+    def _journal(self, tmp: Path, gap_seconds: float, jumps: int = 3) -> Path:
+        base = datetime.now(timezone.utc) - timedelta(hours=6)
+
+        def ts(offset: float) -> str:
+            return (base + timedelta(seconds=offset)).isoformat().replace("+00:00", "Z")
+
+        events = [{"timestamp": ts(0), "event": "Fileheader", "part": 1, "Odyssey": True}]
+        moment = 600.0
+        for index in range(jumps):
+            departure = moment + 900
+            events.append({"timestamp": ts(moment), "event": "CarrierJumpRequest",
+                           "CarrierID": 1, "SystemName": f"System {index}",
+                           "DepartureTime": ts(departure)})
+            events.append({"timestamp": ts(departure + 72), "event": "CarrierJump",
+                           "StarSystem": f"System {index}", "SystemAddress": 100 + index})
+            moment = departure + gap_seconds
+
+        path = tmp / "Journal.2026-09-16T120000.01.log"
+        path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+        return tmp
+
+    def _report(self, directory: Path) -> str:
+        from elite_hud.app import main
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = main(["--carrier-report", "--journal-dir", str(directory)])
+        self.assertEqual(code, 0)
+        return buffer.getvalue()
+
+    def test_it_recovers_the_gap_the_commander_actually_left(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = self._report(self._journal(Path(tmp), gap_seconds=290))
+        self.assertIn("4.83 мин", report)
+        self.assertIn("запрос -> System 0", report)
+        self.assertIn("ПРИБЫТИЕ", report)
+        # The spool-up is reported per jump too.
+        self.assertIn("15.00 мин", report)
+
+    def test_a_longer_gap_is_reported_as_is(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = self._report(self._journal(Path(tmp), gap_seconds=372))
+        self.assertIn("6.20 мин", report)
+
+    def test_a_single_jump_says_there_is_nothing_to_compare(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = self._report(self._journal(Path(tmp), gap_seconds=290, jumps=1))
+        self.assertIn("минимум два запроса", report)
+
+    def test_an_empty_directory_is_handled(self) -> None:
+        with TemporaryDirectory() as tmp:
+            report = self._report(Path(tmp))
+        self.assertIn("не найдено", report)
 
 
 class EntryPointTests(unittest.TestCase):

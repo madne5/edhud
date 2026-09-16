@@ -120,10 +120,8 @@ class CarrierConfig:
     #: figure is "at least 15 minutes"; only used when a CarrierJumpRequest
     #: carries no DepartureTime (journals older than Update 14).
     spool_minutes: float = 15.0
-    #: Cooldown after a jump, counted from DepartureTime. The wiki says five
-    #: minutes; EDDI and the Carrier Manager both measured 290 seconds, which is
-    #: what the game enforces.
-    jump_cooldown_seconds: float = 290.0
+    #: Cooldown after a jump, counted from the moment the carrier arrives.
+    jump_cooldown_seconds: float = 300.0
     #: How long the jump itself takes, from DepartureTime to arrival. Only used
     #: to interpret a CarrierJump event, whose timestamp is the arrival.
     jump_duration_seconds: float = 72.0

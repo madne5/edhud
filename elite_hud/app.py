@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import queue
 import signal
@@ -100,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-update",
         action="store_true",
         help="check GitHub for a newer release, print the result and exit",
+    )
+    parser.add_argument(
+        "--carrier-report",
+        action="store_true",
+        help="read the journals and print the observed fleet carrier jump timings",
     )
     parser.add_argument(
         "--self-check",
@@ -763,6 +769,9 @@ def main(argv: list[str] | None = None) -> int:
         print_genera(table, config.alerts.min_value)
         return 0
 
+    if options.carrier_report:
+        return run_carrier_report(config, options)
+
     if options.self_check:
         return run_self_check(config)
 
@@ -771,6 +780,105 @@ def main(argv: list[str] | None = None) -> int:
 
     app = HudApp(config, options)
     return app.run()
+
+
+def run_carrier_report(config: Config, options: argparse.Namespace) -> int:
+    """Print what the journals actually say about carrier jumps.
+
+    The cooldown is nowhere in the journal, so the only way to settle how long
+    it really is on a given account is to look at the gaps between what the
+    commander actually did: departure to departure, and departure to the next
+    request. If they asked for the next jump as soon as the game allowed it, the
+    shortest such gap is the cooldown.
+    """
+    from .journal.watcher import list_journals
+
+    directory = find_journal_dir(
+        str(options.journal_dir) if options.journal_dir else config.journal.path
+    )
+    if directory is None:
+        print("не найдена папка с журналами; укажите --journal-dir")
+        return 1
+
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=config.journal.history_days)
+    ).timestamp()
+    records: list[tuple[datetime, str, dict]] = []
+    for path in list_journals(directory):
+        try:
+            if path.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    name = str(event.get("event") or "")
+                    if not name.startswith("Carrier"):
+                        continue
+                    stamp = parse_timestamp(event.get("timestamp"))
+                    if stamp is not None:
+                        records.append((stamp, name, event))
+        except OSError as exc:
+            print(f"не удалось прочитать {path.name}: {exc}", file=sys.stderr)
+
+    if not records:
+        print(f"в {directory} не найдено событий флотоносца")
+        return 0
+
+    records.sort(key=lambda item: item[0])
+    print(f"журналы: {directory}")
+    print(f"событий флотоносца: {len(records)}\n")
+
+    requests: list[tuple[datetime, datetime]] = []
+    arrivals: list[tuple[datetime, str]] = []
+    for stamp, name, event in records:
+        if name == "CarrierJumpRequest":
+            departure = parse_timestamp(event.get("DepartureTime"))
+            target = event.get("SystemName") or "?"
+            if departure is None:
+                print(f"{stamp:%Y-%m-%d %H:%M:%S}  запрос -> {target}  (без DepartureTime)")
+                continue
+            spool = (departure - stamp).total_seconds()
+            requests.append((stamp, departure))
+            print(
+                f"{stamp:%Y-%m-%d %H:%M:%S}  запрос -> {target}"
+                f"  отправление {departure:%H:%M:%S}  разгон {spool/60:5.2f} мин"
+            )
+        elif name == "CarrierJump":
+            arrivals.append((stamp, "прибытие"))
+            print(f"{stamp:%Y-%m-%d %H:%M:%S}  ПРИБЫТИЕ (игрок был на борту)")
+        elif name == "CarrierJumpCancelled":
+            print(f"{stamp:%Y-%m-%d %H:%M:%S}  отмена запроса")
+        elif name == "CarrierLocation":
+            print(f"{stamp:%Y-%m-%d %H:%M:%S}  местоположение: {event.get('StarSystem') or '?'}")
+
+    if len(requests) < 2:
+        print("\nДля оценки перезарядки нужно минимум два запроса прыжка.")
+        return 0
+
+    print("\n=== промежутки между последовательными прыжками ===")
+    print("  (от отправления предыдущего до запроса следующего)")
+    gaps: list[float] = []
+    for (_, previous_departure), (next_request, _) in zip(requests, requests[1:]):
+        gap = (next_request - previous_departure).total_seconds()
+        gaps.append(gap)
+        print(f"  {previous_departure:%m-%d %H:%M:%S} -> {next_request:%m-%d %H:%M:%S}"
+              f"   {gap/60:6.2f} мин")
+
+    shortest = min(gaps)
+    print(f"\nсамый короткий промежуток: {shortest/60:.2f} мин ({shortest:.0f} с)")
+    print("если вы запрашивали следующий прыжок сразу, как только игра позволяла,")
+    print("то это и есть перезарядка, отсчитанная от отправления.")
+    print(f"\nсейчас в конфиге: carrier.jump_cooldown_seconds = {config.carrier.jump_cooldown_seconds:.0f}")
+    return 0
 
 
 def run_self_check(config: Config) -> int:

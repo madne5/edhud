@@ -125,18 +125,20 @@ class SystemState:
 #: never reports a cooldown anywhere -- not in CarrierStats, not in any event --
 #: so the HUD has to derive it.
 #:
-#: The wiki states a 5-minute cooldown after the jump completes; the two mature
-#: third-party implementations (EDDI and the Elite Dangerous Carrier Manager)
-#: both measured 290 seconds and both count it from DepartureTime rather than
-#: from arrival. 290 is used here: it matches what the game actually enforces,
-#: and being ten seconds early is a far smaller annoyance than being late.
+#: A five-minute cooldown, counted from the moment the jump completes. Both the
+#: wiki and the in-game carrier screen describe it that way.
+#:
+#: EDDI and the Elite Dangerous Carrier Manager instead use 290 seconds counted
+#: from DepartureTime, which is only 3:38 after arrival. That is the one number
+#: here without a primary source, so it is the one to revisit first if the bar
+#: ever says "ready" while the game still refuses a jump. `elite-hud
+#: --carrier-report` prints the gaps this account actually produced.
 DEFAULT_CARRIER_SPOOL_SECONDS = 15 * 60.0
-DEFAULT_CARRIER_COOLDOWN_SECONDS = 290.0
+DEFAULT_CARRIER_COOLDOWN_SECONDS = 5 * 60.0
 
 #: DepartureTime is when the carrier departs, not when it arrives: the jump runs
 #: through seven phases and finishes at about +72 seconds (EDDI's measurement;
-#: the wiki's timeline ends the exit phase at +1:10). Used when a CarrierJump
-#: event is the only thing available, because its timestamp is the arrival.
+#: the wiki's timeline ends the exit phase at +1:10).
 DEFAULT_CARRIER_JUMP_SECONDS = 72.0
 
 #: Cancelling a scheduled jump imposes its own, much shorter, cooldown.
@@ -401,7 +403,7 @@ class GameState:
         arrived = parse_timestamp(event.get("timestamp"))
         if arrived is not None:
             self.carrier.block_until(
-                arrived + timedelta(seconds=self.carrier_cooldown_seconds - self.carrier_jump_seconds)
+                arrived + timedelta(seconds=self.carrier_cooldown_seconds)
             )
         self.carrier.cancel()
         if event.get("StarSystem"):
@@ -708,11 +710,13 @@ class GameState:
         else:
             self.carrier.departure_inferred = False
         self.carrier.departure = departure
-        # The cooldown is measured from departure, which is what both EDDI and
-        # the Carrier Manager do; the wiki's "5 minutes after the jump" is the
-        # same window once the jump's own duration is taken into account.
+        # The cooldown runs from the arrival, which is the jump's own duration
+        # after departure -- so a jump requested now also books the cooldown,
+        # and the later CarrierJump event (if the commander was aboard) will
+        # compute exactly the same moment.
         self.carrier.block_until(
-            departure + timedelta(seconds=self.carrier_cooldown_seconds)
+            departure
+            + timedelta(seconds=self.carrier_jump_seconds + self.carrier_cooldown_seconds)
         )
         log.info(
             "carrier jump scheduled to %s, departure %s%s",
