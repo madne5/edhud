@@ -1806,6 +1806,19 @@ subprocess.Popen(
 > **When a file is not signed, SmartScreen reputation must build for each new version of your
 > files, starting with zero reputation. Reputation cannot transfer from previous versions unless
 > both were signed using the same publisher identity.**
+>
+> **Signing files using a trusted certificate can allow certificate reputation to build,
+> potentially avoiding warnings on new files signed by the same trusted certificate. Unsigned
+> files must build reputation anew with every update.**
+
+> 💡 **Это самый весомый аргумент за сертификат, даже без мгновенного эффекта.** Репутация
+> привязана к **идентичности подписи (сертификату)**, а не к версии файла. Подписанное
+> приложение со временем перестаёт предупреждать **на всех последующих релизах**; неподписанное
+> **начинает с нуля при каждом обновлении** — то есть при частых релизах (а у автообновляемого
+> приложения они частые) пользователи будут видеть предупреждение **каждый раз**.
+> Microsoft также прямо говорит, что OV и Artifact Signing **функционально эквивалентны**:
+> «OV certificates are a proven option and are functionally **equivalent to Azure Artifact
+> Signing for SmartScreen purposes**».
 
 **Сроки набора репутации — [DOC]:**
 
@@ -1849,32 +1862,53 @@ subprocess.Popen(
 > - **Communicate with early adopters** — for new apps, let beta users know they may see a
 >   SmartScreen prompt on first download…
 
-**MOTW (Mark-of-the-Web) и откуда берётся предупреждение.**
+**MOTW (Mark-of-the-Web) и откуда берётся предупреждение — РАЗРЕШЕНО.**
 
-> ⚠️ **Не подтверждено прямой цитатой.** На актуальной странице Microsoft о репутации
-> SmartScreen термин «Mark of the Web» / `Zone.Identifier` **не упоминается** — она говорит о
-> «downloaded files». Документ Microsoft Learn про Attachment Manager/MOTW, на который я
-> рассчитывал, отдал **404** на использованном URL. Поэтому утверждение «предупреждение
-> вызывается именно MOTW-потоком, поэтому локально собранный файл не предупреждает» —
-> **общеизвестно, но я не подтвердил его официальной цитатой**. Формально подтверждено
-> только: SmartScreen проверяет «downloaded files», и что «No signature → "Windows protected
-> your PC"».
+Ранее я помечал этот пункт как неподтверждённый. Теперь ключевой факт **подтверждён дословной
+цитатой Microsoft** — **[DOC]** страница Microsoft Defender SmartScreen содержит явный блок
+«Important» (проверено мной повторно, HTTP 200):
 
-**Практический вывод по «скачанному» vs «локальному» файлу:**
+> **Important**
+> SmartScreen protects against malicious files from the internet. **It doesn't protect against
+> malicious files on internal locations or network shares, such as shared folders with UNC paths
+> or SMB/CIFS shares.**
 
-- Файл, скачанный через браузер/почту, помечается MOTW → попадает под проверку SmartScreen.
-- Файл, собранный локально, MOTW не имеет → при **локальном** запуске предупреждения обычно
-  нет (**не подтверждено официальной цитатой**).
-- **НО** если вы распространяете приложение как **zip-архив** без браузера (например, через
-  `winget`, прямой HTTPS-ссылкой из curl, с сетевой шары) — MOTW может не появиться, и
-  предупреждения не будет. Однако учтите: **`winget` и большинство браузеров MOTW ставят.**
+Источник: https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen
 
-**🔴 КРИТИЧНО ДЛЯ 2025-2026: Smart App Control на Windows 11.** [DOC] дословно:
+**Практический вывод по способу распространения (главный ответ на вопрос «а если не браузер»):**
+
+| Способ доставки | MOTW | Предупреждение SmartScreen |
+|---|---|---|
+| Запуск локально собранной сборки | нет | **нет** |
+| Копирование из общей папки / UNC / SMB | нет | **нет** — **[DOC]** явное исключение («It doesn't protect against… network shares») |
+| Скачано браузером / из почты | да | **да** |
+| **Скачан `.zip` → распакован Проводником** | **да (переносится)** ⚠️ | **да** |
+| Скачанный установщик (Inno/NSIS) | да (на `.exe` установщика) | **да**, на самом установщике |
+
+🔴 **КРИТИЧНО ДЛЯ ЭТОГО ПРОЕКТА:** Проводник Windows **переносит MOTW из скачанного `.zip`
+на распакованные файлы**. То есть штатный паттерн «публикуем portable-сборку как `.zip` в
+GitHub Releases» **приводит к появлению предупреждения** у распакованного `.exe`. Это относится
+и к `onedir`-варианту, и к `onefile`. 7-Zip по умолчанию MOTW **не** переносит (чем и
+объясняются истории про «обход SmartScreen через 7-Zip»), но полагаться на это нельзя —
+пользователь может распаковать Проводником.
+> ⚠️ Статус: поведение Проводника подтверждено вторичным разбором
+> ([DFIR, 2026-06-29](https://dfir.ru/2026/06/29/mark-of-the-web-the-rules-changed-the-tools-didnt/)),
+> но **не** дословной цитатой Microsoft. Считайте это обоснованным, но не официально
+> документированным.
+> ⚠️ Также **не подтверждено**: снимает ли установщик Inno Setup MOTW с устанавливаемых файлов.
+> Общего правила «инсталлятор всегда снимает MOTW» в документации Microsoft нет — проверьте
+> эмпирически (свойство файла → «Разблокировать»).
+
+**🔴 Smart App Control на Windows 11 перекрывает всё вышесказанное.** [DOC] дословно:
 
 > **On Windows 11 devices, the Smart App Control feature may supersede SmartScreen Application
 > Reputation. Smart App Control will block execution of unsigned files unless the file has a
 > positive reputation. Smart App Control signature checks apply to all executable files, not just
 > those downloaded from the Internet.**
+
+**[DOC]** Дополнительно, страница Smart App Control overview:
+
+> **Malware, Potentially Unwanted Apps (PUA), and unknown, unsigned code are blocked by default.**
 
 Это **прямой ответ** на вопрос «а если файл не скачан из браузера»: на Windows 11 с включённым
 **Smart App Control** неподписанный exe **блокируется независимо от источника** — включая
@@ -1886,16 +1920,35 @@ reputation», которую без подписи набрать нельзя.
   who hasn't manually installed the certificate as a trusted root». Годится только для
   разработки и для предприятий с управляемым доверием (Intune/GPO).
 - ❌ «Пожаловаться в Microsoft» — механизма для consumer-эндпоинтов нет (цитата выше).
+  ⚠️ Оговорка: страница Defender SmartScreen **всё же** предлагает подать файл на проверку
+  через форму WDSI («make sure to select Microsoft Defender SmartScreen from the product
+  menu», https://www.microsoft.com/en-us/wdsi/filesubmission — есть роль «Software developer»),
+  а страница репутации утверждает обратное. Это **противоречие в самой документации Microsoft**:
+  форма WDSI предназначена для оспаривания ложных срабатываний/проверки детекций, а **не** для
+  выдачи репутации по запросу. Практического способа «получить репутацию подачей» нет.
 - ❌ EV ради обхода SmartScreen — не работает с 2024 года (цитата выше).
+- ❌ **`winget`** — даёт только обнаруживаемость; документация Microsoft помечает сертификат как
+  «recommended», но **не** даёт `winget` никакого эффекта на SmartScreen.
 - ❌ Переименование файла / смена версии — репутация привязана к хешу и сертификату, не к имени.
 
 **Что реально работает без покупки сертификата:**
 1. **Microsoft Store (MSIX)** — [DOC] «code signing is free and handled for you automatically —
    Microsoft re-signs the package after certification and you don't need to purchase or manage a
    certificate». Плюс «users never see a SmartScreen warning». Это **единственный бесплатный
-   способ полностью убрать предупреждения**. Требует аккаунта разработчика
-   (storedeveloper.microsoft.com; для физлиц — единоразовый взнос, актуальную сумму
-   **не подтверждал**).
+   способ полностью убрать предупреждения**.
+   ✅ **ПОДТВЕРЖДЕНО: регистрация разработчика стала бесплатной.**
+   **[LIVE]** Блог Windows Developer, **7 мая 2026**, «Publish to Microsoft Store as a company—
+   now with free registration and faster onboarding», дословно:
+   > **Free registration** — The **$99 onboarding fee for company developer accounts has been
+   > removed**, lowering the barrier to get started on the Microsoft Store.
+
+   Также добавлена поддержка входа через Microsoft Entra ID (рабочие аккаунты).
+   Источник: https://blogs.windows.com/windowsdeveloper/2026/05/07/publish-to-microsoft-store-as-a-company-now-with-free-registration-and-faster-onboarding/
+   ⚠️ **Но для PyInstaller это не бесплатный путь, если идти через MSI/EXE.** [DOC] Путь
+   «Microsoft Store (MSI/EXE installer)» требует, чтобы издатель **сам** подписал установщик
+   сертификатом с цепочкой к CA из Microsoft Trusted Root Program (self-signed не принимается).
+   Бесплатная переподпись Microsoft работает **только для пакетов MSIX**. Значит PyInstaller-exe
+   надо упаковывать в MSIX, чтобы воспользоваться бесплатным вариантом.
 2. **SignPath Foundation** — для open source (см. 5.2).
 3. Терпеливый набор репутации **подписанными** релизами (не вариант без сертификата).
 
@@ -1982,14 +2035,54 @@ eligibility requirements and the application process.»
 **Важные ограничения SignPath Foundation:**
 - Сертификат **принадлежит SignPath** — пользователь видит издателя SignPath Foundation, а не
   вас. Именно так работает модель: «we verify that the binary was built from your open source
-  repository and **vouch for that with our name**».
-- Только для проектов с **открытым исходным кодом** (обычно требуется OSI-совместимая
-  лицензия и публичный репозиторий). **Точные критерии на странице `/apply` не опубликованы**
-  — форма подачи заявки рендерится JavaScript'ом и в полученном HTML текст отсутствует →
-  **точный список критериев не подтверждён**; см. https://signpath.org/apply и
-  https://signpath.org/terms.
+  repository and **vouch for that with our name**». Формулировка их условий: «**SignPath
+  Foundation is the publisher of the OSS project**». SignPath при этом **не является CA**.
+- **Точные критерии (получены из `signpath.org/terms`):** OSI-совместимая открытая лицензия
+  **без коммерческого dual-licensing** для всех компонентов; отсутствие проприетарных
+  компонентов; отсутствие malware/PUP; проект активно поддерживается; уже выпущен; задокументирован
+  на странице загрузки; **MFA обязателен для всех участников команды**; роли
+  Authors/Reviewers/Approvers; **ручное одобрение каждого релиза**; на главной странице проекта
+  должна быть надпись «Free code signing provided by SignPath.io, certificate by SignPath
+  Foundation».
+  > ⚠️ Статус: это **вторичный источник** (текст `terms.html` приведён моим исследовательским
+  > субагентом; я его дословно не перепроверял). Само наличие бесплатной программы для OSS
+  > подтверждено дважды — сайтом SignPath и Microsoft Learn.
+- 🔴 **Они прямо оставляют за собой право отказать:** «For executable programs… we require a
+  certain verifiable reputation»; «We're under no obligation to accept your project, and there is
+  no independent arbitration mechanism.» **Малоизвестное приложение может получить отказ.**
+  Это существенно: путь через SignPath **не гарантирован**.
 - Подпись происходит через их пайплайн (SignPath.io), не локально.
 - Для **закрытого** проекта бесплатных вариантов **нет**.
+
+**Прайс-листы CA (⚠️ вторичный источник, мной не перепроверены — SSL.com отдал 301 и таймаут).**
+Ориентиры Microsoft (**[DOC]**, авторитетно): OV **$150–300/год**, EV **$400+/год**.
+Фактические прайс-листы, собранные субагентом: OV — **SSL.com $129/год** (самый дешёвый),
+Sectigo $313.50/год, GlobalSign $529/год (токен) или $289/год (HSM), DigiCert $696/12 мес.;
+EV — SSL.com $349/год, Sectigo $410.85/год, GlobalSign $669/год (токен) или $410/год (HSM),
+DigiCert $972/12 мес. Облачная подпись: DigiCert KeyLocker +$300/год, токен +$144/год,
+SSL.com eSigner $15–187.50/мес по тарифу. **GlobalSign и Sectigo включают токен бесплатно.**
+→ Используйте эти цифры только как ориентир для переговоров, не как оферту.
+
+**🔴 НОВОЕ В 2026: максимальный срок сертификата сокращён до 460 дней.**
+**[LIVE]** Я проверил CSBR напрямую на cabforum.org (HTTP 200), дословно:
+
+> For Code Signing Certificates issued before March 1st, 2026, the validity period MUST NOT
+> exceed **39 months**. For Code Signing Certificates issued on or after March 1st, 2026, the
+> validity period MUST NOT exceed **460 days**.
+
+Там же в таблице «Relevant Dates»: `2026-03-01 | 6.3.2 | For Code Signing Certificates issued
+on or after March 1st, 2026, the validity period MUST NOT exceed 460 days.`
+Баллот: **CSC-31 «Maximum Validity Reduction», 7 ноября 2025**. Также: «The Timestamp
+Certificate validity period MUST NOT exceed 135 months.»
+→ **Практический вывод:** многолетние сертификаты фактически исчезают. Экономия «купить на
+3 года» больше не работает; планируйте **ежегодное** продление (~$129–300/год для OV).
+GlobalSign перестал продавать 2- и 3-летние сертификаты **26 декабря 2025**.
+
+🔴 **Совсем свежее (в день подготовки отчёта):** в той же таблице —
+`2026-09-15 | 7.1.6.4 | Effective September 15, 2026, a Certificate issued to a Subscriber MUST
+contain exactly one of the reserved policy OID.` (баллот **CSC-32**). Это требование действует
+**с 15 сентября 2026**; практического влияния на выбор варианта не оказывает, но означает, что
+CA-практики сейчас меняются — уточняйте у CA актуальные условия.
 
 **Обязательное требование CA/B Forum (ломает CI-подпись «из секрета») — [LIVE]**
 подтверждено на GlobalSign Support («New Requirements related to Private Key protection for
@@ -2028,51 +2121,85 @@ module (HSM) or hardware token. Most CAs provide a compatible USB token or cloud
 
 | Ситуация | Что делать |
 |---|---|
-| Проект **open source** | **SignPath Foundation** — бесплатно, OV-уровень, интеграция с CI. Издатель в подписи — SignPath Foundation |
-| Закрытый проект, бюджет ~$120/год, вы **в США/Канаде** (физлицо) или организация в США/Канаде/ЕС/UK | **Azure Artifact Signing (Basic, $9.99/мес)** — нет токена, CI-friendly, рекомендуется Microsoft |
-| Закрытый проект, вне этих регионов | **OV-сертификат** у CA ($150–300/год) + облачный HSM, либо физический токен на self-hosted раннере |
-| Нужно вообще без предупреждений и бесплатно | **Microsoft Store (MSIX)** — Store переподписывает, предупреждений нет. Минус: дистрибуция только через Store |
-| Нет бюджета и нет OSS | Подписи нет → пользователи увидят «Windows protected your PC» при первом запуске; на Windows 11 со **Smart App Control** приложение может не запуститься вообще. Это надо честно написать в README |
+| Проект **open source** | **SignPath Foundation** — бесплатно, OV-уровень, интеграция с CI. Издатель в подписи — SignPath Foundation. ⚠️ Они могут отказать («we require a certain verifiable reputation») |
+| **Нужно без предупреждений и без денег** | **Microsoft Store (MSIX)** — регистрация **бесплатна с 2026-05-07** ($99 отменён), Microsoft переподписывает, предупреждений нет. ⚠️ Требует упаковки в MSIX; путь MSI/EXE **не** бесплатный (нужна своя подпись) |
+| Закрытый проект, ~$120/год, вы **в США/Канаде** (физлицо) или организация в США/Канаде/ЕС/UK | **Azure Artifact Signing (Basic, $9.99/мес)** — нет токена, CI-friendly, рекомендуется Microsoft. Но нужна платная подписка Azure, и первые релизы всё равно с предупреждением |
+| Закрытый проект, вне этих регионов | **OV-сертификат** у CA (~$129–300/год, ежегодное продление — 460-дневный лимит) + облачный HSM, либо физический токен на self-hosted раннере |
+| Нет бюджета и нет OSS | Подписи нет → «Windows protected your PC» при первом запуске; на Windows 11 со **Smart App Control** приложение может **не запуститься вообще**. Это надо честно написать в README |
 | Закрытый проект, но нужен только self-signed | Только для внутреннего/корпоративного распространения с управляемым доверием (Intune/GPO). Публично — не работает |
+
+> **Важное дополнение про распространение.** Если вы публикуете portable-сборку как `.zip`,
+> предупреждение всё равно появится у тех, кто распакует её **Проводником** (MOTW переносится).
+> Единственный способ доставки **без** предупреждения без сертификата — распространение внутри
+> локальной сети/по UNC (Microsoft прямо исключает network shares из защиты) либо через
+> Microsoft Store. Для публичного распространения через GitHub Releases это не помогает.
 
 ---
 
 ## Приложение A. Сводка «не подтверждено»
 
 1. **Полный текст подзаголовка SmartScreen-диалога** (кроме «Windows protected your PC» и
-   «Run anyway») — на актуальных страницах Microsoft Learn не найден.
-2. **MOTW / `Zone.Identifier`** — механизм не подтверждён официальной цитатой: страница
-   Microsoft о репутации SmartScreen говорит о «downloaded files», не упоминая MOTW;
-   документ Attachment Manager отдал 404.
-3. **«Переименование запущенного exe работает на Windows»** — подтверждено объяснением
+   «Run anyway») — на актуальных страницах Microsoft Learn не найден. Фраза «Microsoft Defender
+   SmartScreen prevented an unrecognized app from starting…» встречается только в заголовках
+   обсуждений Microsoft Q&A (пользовательский контент) и сторонних гайдах. Ссылка «More info»
+   также **не подтверждена** документацией Microsoft.
+   ✅ Что подтверждено: «Windows protected your PC», кнопка «Run anyway», приложение помечено
+   «unrecognized», «Enterprise policy can prevent continuation entirely».
+2. **Текст UAC для неподписанного файла** — строка «Do you want to allow this app from an
+   unknown publisher to make changes to your device?» документацией Microsoft **не подтверждена**
+   (только сообщества). Подтверждено: неподписанный → «Publisher not verified (unsigned)» и
+   жёлтый фон запроса на повышение прав.
+3. **Перенос MOTW Проводником из `.zip`** — подтверждено вторичным разбором
+   (DFIR, 2026-06-29), **не** дословной цитатой Microsoft. Дословно подтверждено лишь то, что
+   SmartScreen **не** защищает файлы на network shares / внутренних расположениях
+   (см. раздел 5.1 — это ключевое исключение теперь подтверждено).
+4. **Снимает ли установщик Inno Setup MOTW с устанавливаемых файлов** — общего правила в
+   документации Microsoft нет. Проверяйте эмпирически.
+5. **«Переименование запущенного exe работает на Windows»** — подтверждено объяснением
    сообщества Super User (получено через Stack Exchange API, так как HTML закрыт Cloudflare:
    HTTP 403), но **не** официальной документацией Microsoft. Прямой цитаты Microsoft Learn /
    Raymond Chen получить не удалось.
-4. **Требование «3+ года налоговой истории» для Azure Artifact Signing** — противоречивые
+6. **Требование «3+ года налоговой истории» для Azure Artifact Signing** — противоречивые
    сведения: сотрудник Microsoft говорит, что требования нет; другие страницы Microsoft
    упоминают 3 года; есть сообщение об отмене. Актуальные страницы требования не содержат.
-5. **Точный путь `ISCC.exe` на GitHub-раннерах** — в `actions/runner-images` путь не указан
+7. **Расхождение в географии между страницами Microsoft** — quickstart перечисляет 11 стран
+   (включая Австралию, Японию, Корею, Сингапур, Швейцарию, Норвегию, Израиль), а
+   «code-signing-options» говорит только «USA, Canada, EU, UK». Не подтверждено, какая из
+   страниц актуальнее.
+8. **Прайс-листы конкретных CA** — вторичный источник, мной не перепроверены (SSL.com отдал
+   HTTP 301 и таймаут). Авторитетны только диапазоны Microsoft: OV $150–300/год, EV $400+/год.
+9. **Коммерческие тарифы SignPath.io** (не Foundation) — не опубликованы (`/pricing` → 404).
+10. **Точный путь `ISCC.exe` на GitHub-раннерах** — в `actions/runner-images` путь не указан
    (подтверждён только факт «InnoSetup 6.7.1» и установка через choco-пакет `innosetup`).
    Путь `C:\Program Files (x86)\Inno Setup 6\ISCC.exe` подтверждён двумя реальными
    workflow и гайдом сообщества, но не первоисточником.
-6. **Является ли `Global\`-мьютекс доступным непривилегированному процессу**
+11. **Является ли `Global\`-мьютекс доступным непривилегированному процессу**
    (`SeCreateGlobalPrivilege`) — в справке Inno Setup `Global\` встречается лишь как пример
    значения `AppMutex`.
-7. **Код выхода 1 при `AppMutex` + `/SUPPRESSMSGBOXES`** — выведено из исходников
+12. **Код выхода 1 при `AppMutex` + `/SUPPRESSMSGBOXES`** — выведено из исходников
    `jrsoftware/issrc`, не из явной фразы справки. Проверьте эмпирически.
-8. **Количественная оценка замедления старта onefile** — официальная документация говорит
+13. **Количественная оценка замедления старта onefile** — официальная документация говорит
    только «a little slower to start».
-9. **Повышенная частота ложных срабатываний AV для onefile** — документально не подтверждена,
+14. **Повышенная частота ложных срабатываний AV для onefile** — документально не подтверждена,
    приведён как обоснованный механизм.
-10. **Не вызывает ли Qt/PySide6 `RegisterApplicationRestart` автоматически** — считаю, что нет,
+15. **Не вызывает ли Qt/PySide6 `RegisterApplicationRestart` автоматически** — считаю, что нет,
     но официального утверждения не нашёл. Проверьте на живой сборке (после тихого обновления
     приложение не вернулось → значит не вызывает).
-11. **Стоимость регистрации разработчика в Microsoft Store** — не проверял.
-12. **Точные критерии SignPath Foundation** — страница `/apply` рендерится JavaScript'ом,
-    текст критериев в HTML отсутствует.
-13. **Значения Win32 `creationflags`** — приведены по документации `CreateProcess`;
+16. **Значения Win32 `creationflags`** — приведены по документации `CreateProcess`;
     непосредственная проверка на Windows не выполнялась (на macOS эти атрибуты `subprocess`
     отсутствуют, что я подтвердил).
+17. **Данные из `Azure Retail Prices API`** (effectiveStartDate, отсутствие пропорциональной
+    оплаты) — приведены моим субагентом; я независимо подтвердил только суммы $9.99/$99.99/
+    $0.005 со страницы тарифов, но не через сам billing API.
+
+> **Снято с учёта (было «не подтверждено», теперь подтверждено):**
+> - **Ответ на вопрос «а если не скачано браузером»** — подтверждён дословной цитатой Microsoft
+>   об исключении для network shares (раздел 5.1).
+> - **Стоимость регистрации разработчика в Microsoft Store** — подтверждено: бесплатно
+>   с 2026-05-07 (раздел 5.1).
+> - **Максимальный срок сертификата** — подтверждено по CSBR: 460 дней с 2026-03-01 (раздел 5.2).
+> - **Критерии SignPath Foundation** — получены из `terms` (раздел 5.2), статус: вторичный
+>   источник, но сама бесплатность подтверждена дважды.
 
 ## Приложение B. Замеченные расхождения с текущим кодом проекта
 

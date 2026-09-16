@@ -128,13 +128,21 @@ jobs:
       - name: Smoke-test the frozen executable
         shell: pwsh
         run: |
-          # Offscreen so the check runs without a desktop session.
+          # The release build is a windowed (GUI subsystem) executable. PowerShell
+          # does not wait for `& $exe` in that case and $LASTEXITCODE stays empty,
+          # which is why this uses Start-Process -Wait and reads a real exit code.
           $env:QT_QPA_PLATFORM = "offscreen"
-          $exe = "dist\elite-hud\elite-hud.exe"
-          & $exe --version
-          if ($LASTEXITCODE -ne 0) { Write-Error "the frozen build cannot report its version"; exit 1 }
-          & $exe --list-genera | Select-Object -First 5
-          if ($LASTEXITCODE -ne 0) { Write-Error "the frozen build cannot read its bundled data"; exit 1 }
+          $exe = (Resolve-Path "dist\elite-hud\elite-hud.exe").Path
+          Write-Host "testing $exe"
+
+          foreach ($arg in @("--version", "--self-check", "--list-genera")) {
+            $proc = Start-Process -FilePath $exe -ArgumentList $arg -Wait -PassThru -NoNewWindow
+            if ($proc.ExitCode -ne 0) {
+              Write-Error "the frozen build failed '$arg' with exit code $($proc.ExitCode)"
+              exit 1
+            }
+            Write-Host "  $arg -> exit 0"
+          }
 
       - name: Publish the release
         shell: pwsh
@@ -150,16 +158,33 @@ jobs:
             if (-not (Test-Path $asset)) { Write-Error "missing release asset $asset"; exit 1 }
           }
 
-          $existing = gh release view $env:TAG --json tagName 2>$null
+          # Create the release empty, then attach the files one by one: passing
+          # an array straight to a native command depends on splatting rules,
+          # and a release that silently ends up with zero assets is worse than
+          # a loud failure.
+          gh release view $env:TAG --json tagName *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "release $env:TAG exists; uploading assets with --clobber"
-            gh release upload $env:TAG @assets --clobber
+            Write-Host "release $env:TAG already exists; attaching assets"
           } else {
             # --verify-tag makes a mistyped tag fail loudly instead of creating one.
-            gh release create $env:TAG @assets `
+            gh release create $env:TAG `
               --title "elite-hud $env:VERSION" `
               --generate-notes `
               --verify-tag
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+
+          foreach ($asset in $assets) {
+            gh release upload $env:TAG $asset --clobber
+            if ($LASTEXITCODE -ne 0) { Write-Error "uploading $asset failed"; exit $LASTEXITCODE }
+          }
+
+          # Fail the job if the release did not end up with all three files.
+          $published = gh release view $env:TAG --json assets --jq '.assets | length'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ([int]$published -lt 3) {
+            Write-Error "release $env:TAG has $published assets, expected 3"
+            exit 1
+          }
+          Write-Host "release $env:TAG published with $published assets"
           gh release view $env:TAG

@@ -428,6 +428,20 @@ class HudWindow(QWidget):
             width = self._measure()
         if dropped:
             log.debug("HUD too wide for the screen; dropped %s", ", ".join(reversed(dropped)))
+
+        if width > limit:
+            # Last resort on a very narrow screen: let the surviving elastic
+            # spans shrink past their readable floor. Showing an ellipsis is
+            # better than drawing off the edge of the display.
+            for segment in self._segments:
+                for span in segment.spans:
+                    if not span.elastic:
+                        continue
+                    metrics = self._bold_metrics if span.bold else self._metrics
+                    span.text = metrics.elidedText(
+                        span.text, Qt.TextElideMode.ElideRight, int(metrics.horizontalAdvance(ELLIPSIS))
+                    )
+            width = self._measure()
         return width
 
     def _layout(self) -> None:

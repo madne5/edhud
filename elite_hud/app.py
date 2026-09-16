@@ -95,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="check GitHub for a newer release, print the result and exit",
     )
     parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="verify the bundled data and configuration, then exit (0 = healthy)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="ignore the single-instance guard (for testing)",
@@ -710,11 +715,58 @@ def main(argv: list[str] | None = None) -> int:
         print_genera(table, config.alerts.min_value)
         return 0
 
+    if options.self_check:
+        return run_self_check(config)
+
     if options.check_update:
         return run_update_check(config, options)
 
     app = HudApp(config, options)
     return app.run()
+
+
+def run_self_check(config: Config) -> int:
+    """Verify that a frozen or source install is actually intact.
+
+    Written for the release workflow: a windowed executable has no console, so
+    the only dependable signal it can give a build script is its exit code.
+    """
+    from .updater import clear_stale_marker
+
+    problems: list[str] = []
+
+    table = ExobiologyTable()
+    applied = table.apply_overrides(config.exobiology_overrides)
+    genera = len(table.genera_by_key)
+    species = len(table.species_by_key)
+    print(f"version              {__version__}")
+    print(f"exobiology table     {genera} genera, {species} species ({applied} overrides)")
+    if genera < 15 or species < 80:
+        problems.append("the bundled exobiology table is missing or truncated")
+    for name in ("Stratum Tectonicas", "Fonticulua Fluctus"):
+        if table.species(name) is None:
+            problems.append(f"the exobiology table has no entry for {name}")
+
+    data_path = Path(__file__).resolve().parent / "data" / "exobiology.json"
+    print(f"data file            {data_path} ({'present' if data_path.is_file() else 'MISSING'})")
+    if not data_path.is_file():
+        problems.append(f"{data_path} does not exist")
+
+    sounds = SoundPlayer(config.alerts.sound_file, config.alerts.volume)
+    print(f"alert sound          {'ready' if sounds.available else 'unavailable'}")
+
+    journal = find_journal_dir(config.journal.path)
+    print(f"journal directory    {journal or 'not found (harmless outside the game)'}")
+
+    if clear_stale_marker():
+        print("note                 cleared a leftover update marker")
+
+    if problems:
+        for problem in problems:
+            print(f"PROBLEM: {problem}", file=sys.stderr)
+        return 1
+    print("self-check OK")
+    return 0
 
 
 #: Exit codes of --check-update, for scripting.

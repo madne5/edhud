@@ -14,7 +14,10 @@ items as leads to verify rather than settled facts.
 | `journal_format_reference.md` | Elite Dangerous player-journal schema: every event this project reads, with real field names and sample JSON |
 | `EXOBIOLOGY_RU.md` | Exobiology payouts: genus/species values, the base+4x "first logged" bonus, and where the sources disagree |
 | `INNO_SETUP_RU.md` | Inno Setup: silent-install flags, `CloseApplications`/`RestartApplications`, `AppMutex`, uninstall registry keys |
-| `WINDOWS_RELEASE_UPDATE_RU.md` | PyInstaller onefile vs onedir, GitHub Releases API, release workflows, Windows self-update, code signing |
+| `WINDOWS_RELEASE_UPDATE_RU.md` | PyInstaller onefile vs onedir, GitHub Releases API, release workflows, Windows self-update |
+| `windows_code_signing_2025_2026_RU.md` | Code signing in depth: SmartScreen behaviour, mark-of-the-web, certificate costs and validity limits, SignPath, Azure Artifact Signing |
+| `code-signing-prices-2026-09-16.md` | Raw certificate pricing captured on that date |
+| `windows-selfupdate-pyinstaller-report.md` | An independent pass over the same self-update problem, kept for cross-checking |
 
 `data/` holds intermediate datasets used while building
 `elite_hud/data/exobiology.json`. The canonical generator is
