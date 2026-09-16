@@ -37,6 +37,10 @@ class LabelConfig:
     """Text shown by the HUD. Change these to localise or shorten the bar."""
 
     carrier: str = "ФК"
+    #: shown while the carrier is recharging: "ФК готов через 04:12"
+    carrier_cooldown: str = "готов через"
+    #: shown briefly once it may jump again
+    carrier_ready: str = "готов"
     bodies: str = "тел"
     fss: str = "FSS"
     bio: str = "БИО"
@@ -104,6 +108,30 @@ class AlertConfig:
 
 
 @dataclass
+class CarrierConfig:
+    """Fleet carrier jump timings.
+
+    The journal never reports a cooldown directly, so the HUD derives it from
+    the events that do exist. These numbers are Frontier's, not ours, and are
+    here so a rebalance is a config edit rather than a new release.
+    """
+
+    #: Spool-up between requesting a jump and the carrier departing. Frontier's
+    #: figure is "at least 15 minutes"; only used when a CarrierJumpRequest
+    #: carries no DepartureTime (journals older than Update 14).
+    spool_minutes: float = 15.0
+    #: How long after arriving a carrier must wait before the next jump can be
+    #: requested. Frontier: a 5-minute cooldown once the jump completes.
+    jump_cooldown_minutes: float = 5.0
+    #: Departure is not arrival: the jump runs through seven phases and finishes
+    #: about 70 seconds later, which is when the cooldown starts. Only used when
+    #: no CarrierJump event was recorded.
+    jump_completion_seconds: float = 70.0
+    #: Draw the cooldown segment at all.
+    show_cooldown: bool = True
+
+
+@dataclass
 class UpdateConfig:
     """Self-update from GitHub Releases."""
 
@@ -139,6 +167,7 @@ class Config:
     journal: JournalConfig = field(default_factory=JournalConfig)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
+    carrier: CarrierConfig = field(default_factory=CarrierConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     #: species name -> credit value, overrides for the bundled table
@@ -160,6 +189,7 @@ class Config:
         _merge(config.overlay, raw.get("overlay"))
         _merge(config.overlay.labels, raw.get("overlay", {}).get("labels"))
         _merge(config.alerts, raw.get("alerts"))
+        _merge(config.carrier, raw.get("carrier"))
         _merge(config.update, raw.get("update"))
         _merge(config.logging, raw.get("logging"))
 
@@ -212,6 +242,11 @@ class Config:
         update.timeout_seconds = min(120.0, max(3.0, float(update.timeout_seconds)))
         update.repo = update.repo.strip().strip("/")
 
+        carrier = self.carrier
+        carrier.spool_minutes = min(120.0, max(0.0, float(carrier.spool_minutes)))
+        carrier.jump_cooldown_minutes = min(120.0, max(0.0, float(carrier.jump_cooldown_minutes)))
+        carrier.jump_completion_seconds = min(600.0, max(0.0, float(carrier.jump_completion_seconds)))
+
         self.overlay.monitor = str(self.overlay.monitor).strip()
 
     def to_toml(self) -> str:
@@ -224,6 +259,7 @@ class Config:
             ("journal", self.journal),
             ("overlay", self.overlay),
             ("alerts", self.alerts),
+            ("carrier", self.carrier),
             ("update", self.update),
             ("logging", self.logging),
         ):

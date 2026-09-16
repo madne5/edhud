@@ -291,29 +291,63 @@ class HudWindow(QWidget):
         )
 
     def _carrier_segment(self, lead: float) -> Segment | None:
+        """Either the countdown to a scheduled jump, or the post-jump cooldown.
+
+        The two are mutually exclusive: a jump cannot be requested while the
+        carrier is still recharging.
+        """
         carrier = self.state.carrier
+        cfg = self.config.overlay
+        labels = cfg.labels
         remaining = carrier.seconds_until_jump()
-        if remaining is None:
+
+        if remaining is not None:
+            if remaining <= 60:
+                color = cfg.danger
+            elif remaining <= 300:
+                color = cfg.accent
+            else:
+                color = cfg.foreground
+
+            spans = [Span(f"{labels.carrier} ", color=cfg.foreground, dim=0.7)]
+            if carrier.target_system:
+                spans.append(Span(f"{carrier.target_system} ", color=color, bold=True))
+            spans.append(Span(format_countdown(remaining), color=color, bold=True))
+            return Segment(
+                glyph="carrier" if cfg.show_glyphs else None,
+                spans=spans,
+                glyph_color=color,
+                lead=lead,
+            )
+
+        if not self.config.carrier.show_cooldown:
             return None
 
-        cfg = self.config.overlay
-        if remaining <= 60:
-            color = cfg.danger
-        elif remaining <= 300:
-            color = cfg.accent
-        else:
-            color = cfg.foreground
+        cooldown = carrier.seconds_until_ready()
+        if cooldown is not None:
+            # Dim: this is a wait, not an event.
+            return Segment(
+                glyph="carrier" if cfg.show_glyphs else None,
+                spans=[
+                    Span(f"{labels.carrier} ", color=cfg.foreground, dim=0.5),
+                    Span(f"{labels.carrier_cooldown} ", color=cfg.foreground, dim=0.65),
+                    Span(format_countdown(cooldown), color=cfg.foreground, dim=0.85),
+                ],
+                glyph_color=cfg.foreground,
+                lead=lead,
+            )
 
-        spans = [Span(f"{cfg.labels.carrier} ", color=cfg.foreground, dim=0.7)]
-        if carrier.target_system:
-            spans.append(Span(f"{carrier.target_system} ", color=color, bold=True))
-        spans.append(Span(format_countdown(remaining), color=color, bold=True))
-        return Segment(
-            glyph="carrier" if cfg.show_glyphs else None,
-            spans=spans,
-            glyph_color=color,
-            lead=lead,
-        )
+        if carrier.became_ready():
+            return Segment(
+                glyph="carrier" if cfg.show_glyphs else None,
+                spans=[
+                    Span(f"{labels.carrier} ", color=cfg.foreground, dim=0.6),
+                    Span(labels.carrier_ready, color=cfg.success),
+                ],
+                glyph_color=cfg.success,
+                lead=lead,
+            )
+        return None
 
     def _system_segment(self, lead: float) -> Segment | None:
         system = self.state.system

@@ -31,6 +31,8 @@ show_glyphs = true
 
 [overlay.labels]
 carrier = "ФК"
+carrier_cooldown = "готов через"
+carrier_ready = "готов"
 bodies = "тел"
 fss = "FSS"
 bio = "БИО"
@@ -47,6 +49,12 @@ volume = 0.8
 sound_min_confidence = "guaranteed"
 display_seconds = 8.0
 desktop_notification = false
+
+[carrier]
+spool_minutes = 15.0
+jump_cooldown_minutes = 5.0
+jump_completion_seconds = 70.0
+show_cooldown = true
 
 [update]
 enabled = true

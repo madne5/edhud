@@ -193,6 +193,72 @@ class HudRenderTests(unittest.TestCase):
         self.assertIn("Sol", hud.bar_text())
         hud.close()
 
+    def _state_with_jump(self, config: Config, *, departed_ago: float | None, in_seconds: float | None):
+        """A carrier either about to jump, or recharging after one."""
+        state = make_state(config)
+        now = datetime.now(timezone.utc)
+        carrier = state.carrier
+        if in_seconds is not None:
+            carrier.departure = now + timedelta(seconds=in_seconds)
+            carrier.target_system = "Synuefe GX-K c24-11"
+        if departed_ago is not None:
+            carrier.last_jump = now - timedelta(seconds=departed_ago)
+        return state
+
+    def test_a_scheduled_jump_shows_the_target_and_the_countdown(self) -> None:
+        config = Config()
+        state = self._state_with_jump(config, departed_ago=None, in_seconds=754)
+        hud = self._hud(config, state)
+        text = hud.bar_text()
+        self.assertIn("ФК", text)
+        self.assertIn("Synuefe GX-K c24-11", text)
+        self.assertIn("12:34", text)
+        hud.close()
+
+    def test_the_cooldown_is_shown_while_the_carrier_recharges(self) -> None:
+        config = Config()
+        state = self._state_with_jump(config, departed_ago=60, in_seconds=None)
+        hud = self._hud(config, state)
+        text = hud.bar_text()
+        self.assertIn("готов через", text)
+        self.assertIn("04:00", text, f"expected the remaining cooldown, got {text!r}")
+        hud.close()
+
+    def test_ready_is_shown_briefly_after_the_cooldown(self) -> None:
+        config = Config()
+        # Default cooldown is 5 minutes; been ready for 10 seconds.
+        state = self._state_with_jump(config, departed_ago=5 * 60 + 10, in_seconds=None)
+        hud = self._hud(config, state)
+        text = hud.bar_text()
+        self.assertIn("готов", text)
+        self.assertNotIn("готов через", text)
+        hud.close()
+
+    def test_nothing_is_shown_once_the_carrier_is_long_ready(self) -> None:
+        config = Config()
+        state = self._state_with_jump(config, departed_ago=3600, in_seconds=None)
+        hud = self._hud(config, state)
+        self.assertNotIn("ФК", hud.bar_text())
+        hud.close()
+
+    def test_the_cooldown_can_be_switched_off(self) -> None:
+        config = Config()
+        config.carrier.show_cooldown = False
+        state = self._state_with_jump(config, departed_ago=60, in_seconds=None)
+        hud = self._hud(config, state)
+        self.assertNotIn("готов через", hud.bar_text())
+        hud.close()
+
+    def test_a_scheduled_jump_wins_over_the_cooldown(self) -> None:
+        """They cannot both be true in game; if they are, the jump matters more."""
+        config = Config()
+        state = self._state_with_jump(config, departed_ago=30, in_seconds=600)
+        hud = self._hud(config, state)
+        text = hud.bar_text()
+        self.assertIn("Synuefe GX-K c24-11", text)
+        self.assertNotIn("готов через", text)
+        hud.close()
+
     def test_confirmed_alert_shows_the_first_logged_payout(self) -> None:
         config = Config()
         state = make_state(config)

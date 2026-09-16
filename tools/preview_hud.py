@@ -31,6 +31,11 @@ FIXTURE = REPO_ROOT / "tests" / "fixtures" / "Journal.2026-03-14T200000.01.log"
 OUT_DIR = REPO_ROOT / "tools" / "preview"
 
 
+def load_fixture_events() -> list[dict]:
+    with open(FIXTURE, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
 def play_fixture(state: GameState) -> list[Alert]:
     alerts: list[Alert] = []
     with open(FIXTURE, encoding="utf-8") as handle:
@@ -184,14 +189,26 @@ def main() -> int:
     )
     written.append(shoot(app, "03-alert-possible", config, state, possible))
 
-    # 4. Narrow screen: elastic names are elided, then whole segments drop.
+    # 4. Carrier recharging: the post-jump cooldown, no jump scheduled.
     state_module.utcnow = lambda: datetime(2026, 3, 14, 20, 17, 26, tzinfo=timezone.utc)
-    written.append(shoot(app, "04-narrow-screen", config, state, None, screen_width=760))
+    cooldown_state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+    for event in load_fixture_events():
+        if event.get("event") in {"CarrierJumpCancelled"}:
+            continue
+        cooldown_state.apply(event)
+    cooldown_state.carrier.cancel()
+    cooldown_state.carrier.last_jump = datetime(2026, 3, 14, 20, 14, 0, tzinfo=timezone.utc)
+    written.append(shoot(app, "04-carrier-cooldown", config, cooldown_state, None))
+    state_module.utcnow = original
+
+    # 5. Narrow screen: elastic names are elided, then whole segments drop.
+    state_module.utcnow = lambda: datetime(2026, 3, 14, 20, 17, 26, tzinfo=timezone.utc)
+    written.append(shoot(app, "05-narrow-screen", config, state, None, screen_width=760))
     state_module.utcnow = original
 
     # 5. Empty state: no journal data at all.
     empty = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
-    written.append(shoot(app, "05-no-data", config, empty, None))
+    written.append(shoot(app, "06-no-data", config, empty, None))
 
     for path in written:
         print(f"wrote {path.relative_to(REPO_ROOT)}")

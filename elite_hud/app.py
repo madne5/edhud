@@ -246,7 +246,13 @@ class HudApp:
         if applied:
             log.info("applied %d exobiology value override(s)", applied)
 
-        self.state = GameState(self.table, value_threshold=config.alerts.min_value)
+        self.state = GameState(
+            self.table,
+            value_threshold=config.alerts.min_value,
+            carrier_spool_seconds=config.carrier.spool_minutes * 60.0,
+            carrier_cooldown_seconds=config.carrier.jump_cooldown_minutes * 60.0,
+            carrier_completion_seconds=config.carrier.jump_completion_seconds,
+        )
         self.sound = SoundPlayer(config.alerts.sound_file, config.alerts.volume)
         self.sound_min_rank = CONFIDENCE_BY_NAME[
             config.alerts.sound_min_confidence
@@ -375,6 +381,8 @@ class HudApp:
                 QTimer.singleShot(800, self._app.quit)
 
     def _tick(self) -> None:
+        # Advance anything that depends on the clock before drawing.
+        self.state.settle()
         self._drain()
         self._drain_updates()
         if self._pending_sound:
