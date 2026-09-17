@@ -7,9 +7,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import builtins
+import os
+import time
+from unittest import mock
 from elite_hud.journal.watcher import (
     JOURNAL_RE,
     JournalTailer,
+    JournalWatcher,
     journal_sort_key,
     list_journals,
 )
@@ -151,6 +156,119 @@ class TailerTests(unittest.TestCase):
         with open(path, "ab") as handle:
             handle.write(raw[raw.index("С".encode()) + 1 :])
         self.assertEqual(list(tailer.read_new_lines()), [payload])
+
+
+# -- replay window and failure handling ------------------------------------
+
+NAME = "Journal.2026-03-14T200000.01.log"
+
+
+def write_journal(directory: Path, *, age_days: float = 0.0) -> Path:
+    path = directory / NAME
+    path.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {"event": "Fileheader", "language": "Russian"},
+                {"event": "LoadGame", "Commander": "Madne5", "Credits": 100},
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if age_days:
+        stamp = time.time() - age_days * 86400
+        os.utime(path, (stamp, stamp))
+    return path
+
+
+def collect(directory: Path, *, days: int, timeout: float = 3.0) -> list[dict]:
+    """Watch a directory, collecting whatever the replay delivers."""
+    events: list[dict] = []
+    watcher = JournalWatcher(directory, events.append, poll_interval=0.02, history_days=days)
+    watcher.start()
+    deadline = time.time() + timeout
+    while time.time() < deadline and not events:
+        time.sleep(0.02)
+    watcher.stop()
+    return events
+
+
+class HistoryWindowTests(unittest.TestCase):
+    def test_a_recent_journal_is_replayed(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        write_journal(directory)
+        events = collect(directory, days=7)
+        self.assertEqual([event.get("event") for event in events],
+                         ["Fileheader", "LoadGame"])
+
+    def test_zero_days_means_no_history(self) -> None:
+        """The config says 0 disables history; it used to replay everything."""
+        directory = Path(tempfile.mkdtemp())
+        write_journal(directory)
+        # Nothing is delivered from the existing file; the tailer starts at the
+        # end of it instead.
+        events: list[dict] = []
+        watcher = JournalWatcher(directory, events.append, poll_interval=0.02, history_days=0)
+        watcher.start()
+        time.sleep(0.3)
+        watcher.stop()
+        self.assertEqual(events, [])
+
+    def test_an_old_journal_is_outside_the_window(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        write_journal(directory, age_days=30)
+        self.assertEqual(collect(directory, days=7), [])
+
+    def test_an_old_journal_is_inside_a_wider_window(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        write_journal(directory, age_days=30)
+        self.assertEqual(len(collect(directory, days=60)), 2)
+
+
+class ReplayFailureTests(unittest.TestCase):
+    def test_history_survives_a_failed_replay(self) -> None:
+        """Marking the file as seen on failure hid the failure.
+
+        The tailer then started at the end of the file, the poll loop never
+        revisited it, and the whole session's history was skipped for the rest
+        of the run -- including the LoadGame that supplies rank and the balance.
+        """
+        directory = Path(tempfile.mkdtemp())
+        target = write_journal(directory)
+        real_open = builtins.open
+        failed = {"count": 0}
+
+        def flaky(file, *args, **kwargs):
+            if str(file) == str(target) and failed["count"] == 0:
+                failed["count"] += 1
+                raise PermissionError(13, "Permission denied")
+            return real_open(file, *args, **kwargs)
+
+        events: list[dict] = []
+        watcher = JournalWatcher(directory, events.append, poll_interval=0.02, history_days=7)
+        with mock.patch.object(builtins, "open", flaky):
+            watcher.start()
+            deadline = time.time() + 3.0
+            while time.time() < deadline and len(events) < 2:
+                time.sleep(0.02)
+        watcher.stop()
+
+        self.assertEqual(failed["count"], 1, "the failure injection did not fire")
+        # The recovery path read the file from the beginning rather than
+        # treating it as already processed.
+        self.assertEqual([event.get("event") for event in events],
+                         ["Fileheader", "LoadGame"])
+
+    def test_a_successful_replay_marks_the_file_seen(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        target = write_journal(directory)
+        events: list[dict] = []
+        watcher = JournalWatcher(directory, events.append, poll_interval=0.02, history_days=7)
+        watcher.start()
+        time.sleep(0.3)
+        watcher.stop()
+        self.assertIn(target, watcher._seen_files)
 
 
 if __name__ == "__main__":

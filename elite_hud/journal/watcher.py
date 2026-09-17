@@ -165,8 +165,15 @@ class JournalWatcher:
     # -- internals ---------------------------------------------------------
 
     def _cutoff(self) -> float:
+        """Oldest modification time worth replaying.
+
+        ``history_days = 0`` means "no history", as the config documents it and
+        as the carrier report also reads it. Returning minus infinity instead
+        replayed every journal ever written, which is the opposite of what the
+        setting says.
+        """
         if self.history_days <= 0:
-            return float("-inf")
+            return float("inf")
         return (datetime.now(timezone.utc) - timedelta(days=self.history_days)).timestamp()
 
     def _status(self, message: str) -> None:
@@ -195,6 +202,8 @@ class JournalWatcher:
         """Feed every file in the recent window, oldest first, so state is warm."""
         cutoff = self._cutoff()
         files = list_journals(self.directory)
+        replayed = 0
+        unread: set[Path] = set()
         for path in files:
             try:
                 if path.stat().st_mtime < cutoff:
@@ -208,13 +217,26 @@ class JournalWatcher:
                         if line:
                             self._emit_line(line)
             except OSError as exc:
-                log.warning("cannot replay %s: %s", path, exc)
+                # Deliberately not marked as seen. Marking it hid the failure:
+                # the tailer then started at the end of the file, the poll loop
+                # never revisited it, and the whole session's history -- the
+                # LoadGame that supplies rank and the balance among it -- was
+                # skipped for the rest of the run.
+                log.warning("cannot replay %s: %s; it will be read in full later", path, exc)
+                unread.add(path)
+                continue
             self._seen_files.add(path)
+            replayed += 1
 
         if files:
-            # Hand the newest file to the tailer positioned at its current end.
-            self._tailer.switch_to(files[-1])
-            self._status(f"replayed {len(self._seen_files)} journal file(s)")
+            newest = files[-1]
+            # Hand the newest file to the tailer. It is positioned at the end
+            # only if that file was actually read; otherwise it has to start at
+            # the beginning, which is what the poll loop's own from_start logic
+            # does for every file but this one -- the tailer is already on it,
+            # so the poll loop would never look again.
+            self._tailer.switch_to(newest, from_start=newest in unread)
+            self._status(f"replayed {replayed} journal file(s)")
 
     def _poll_loop(self) -> None:
         while not self._stop.is_set():

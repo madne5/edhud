@@ -326,3 +326,57 @@ class RobustnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexVariantTests(unittest.TestCase):
+    """A CodexEntry names a species *variant*; the table is keyed by the species.
+
+    Without stripping the variant token every real biology codex entry resolved
+    to nothing. That was invisible in these journals only because each codex line
+    is paired with a same-second ScanOrganic, which the HUD does handle -- so the
+    path existed for the case it never worked for.
+    """
+
+    def setUp(self) -> None:
+        self.table = ExobiologyTable()
+
+    def test_a_colour_variant_resolves(self) -> None:
+        species = self.table.species("$Codex_Ent_Clypeus_02_M_Name;")
+        self.assertIsNotNone(species)
+        self.assertEqual(species.name, "Clypeus Margaritus")
+
+    def test_an_element_variant_resolves(self) -> None:
+        species = self.table.species("$Codex_Ent_Bacterial_09_Antimony_Name;")
+        self.assertIsNotNone(species)
+        self.assertEqual(species.name, "Bacterium Volu")
+
+    def test_every_real_biology_codex_symbol_resolves(self) -> None:
+        for symbol in (
+            "$Codex_Ent_Clypeus_02_M_Name;",
+            "$Codex_Ent_Tussocks_14_M_Name;",
+            "$Codex_Ent_Cactoid_03_M_Name;",
+            "$Codex_Ent_Conchas_01_Niobium_Name;",
+            "$Codex_Ent_Fungoids_02_Mercury_Name;",
+            "$Codex_Ent_Bacterial_09_Antimony_Name;",
+            "$Codex_Ent_Bacterial_01_M_Name;",
+        ):
+            with self.subTest(symbol=symbol):
+                self.assertIsNotNone(self.table.species(symbol), symbol)
+
+    def test_a_plain_species_symbol_still_resolves(self) -> None:
+        species = self.table.species("$Codex_Ent_Stratum_07_Name;")
+        self.assertIsNotNone(species)
+        self.assertEqual(species.name, "Stratum Tectonicas")
+
+    def test_an_unknown_variant_is_still_unknown(self) -> None:
+        self.assertIsNone(self.table.species("$Codex_Ent_NotAGenus_02_M_Name;"))
+
+    def test_the_stripper_leaves_a_base_symbol_alone(self) -> None:
+        from elite_hud.exobiology import _strip_variant
+
+        self.assertEqual(
+            _strip_variant("Codex_Ent_Stratum_07_Name"), "Codex_Ent_Stratum_07_Name"
+        )
+        self.assertEqual(
+            _strip_variant("$Codex_Ent_Clypeus_02_M_Name;"), "Codex_Ent_Clypeus_02_Name"
+        )

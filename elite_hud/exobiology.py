@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -57,6 +58,21 @@ class Genus:
         if not candidates:
             return None
         return max(candidates, key=lambda s: s.value)
+
+
+#: ``Codex_Ent_<Genus>_<NN>_<Variant>_Name`` -> ``Codex_Ent_<Genus>_<NN>_Name``.
+#: Tolerant of the surrounding ``$`` and ``;`` because the lookup runs after
+#: they have already been stripped, and working on either form avoids having to
+#: remember which.
+_VARIANT_RE = re.compile(r"^\$?(?P<base>Codex_Ent_.+_\d+)_[^_]+_Name;?$")
+
+
+def _strip_variant(symbol: str) -> str:
+    """Drop the colour or element token from a codex species symbol."""
+    match = _VARIANT_RE.match(symbol)
+    if match is None:
+        return symbol
+    return match.group("base") + "_Name"
 
 
 def _normalize(text: str) -> str:
@@ -156,6 +172,20 @@ class ExobiologyTable:
         stripped = _strip_symbol(text)
         if stripped in self.species_by_key:
             return self.species_by_key[stripped]
+        # CodexEntry names a species *variant*, e.g.
+        # "$Codex_Ent_Clypeus_02_M_Name;" or
+        # "$Codex_Ent_Bacterial_09_Antimony_Name;". The table is keyed by the
+        # base species, so without this every real biology codex entry resolved
+        # to nothing while a codex entry with no accompanying ScanOrganic --
+        # which is the case this path exists for -- was lost entirely.
+        base = _strip_variant(stripped)
+        if base != stripped:
+            # The table is keyed by the full symbol, "$..._Name;", so both the
+            # bare and the wrapped form are worth trying.
+            for candidate in (base, f"${base};"):
+                hit = self.species_by_key.get(candidate)
+                if hit is not None:
+                    return hit
 
         normalized = _normalize(text)
         hit = self.species_by_name.get(normalized)
