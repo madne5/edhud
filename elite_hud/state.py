@@ -1301,9 +1301,12 @@ class GameState:
         address = int(event.get("SystemAddress") or 0)
         if self.system.address and address and address != self.system.address:
             return []
-        species = self.exobiology.species(
-            event.get("Name") or event.get("Name_Localised")
-        )
+        # Both spellings are tried in turn rather than with `or`: the localised
+        # name is a usable fallback when the symbol is one this table cannot
+        # resolve, and `or` never reached it while Name was present.
+        species = self.exobiology.species(event.get("Name"))
+        if species is None:
+            species = self.exobiology.species(event.get("Name_Localised"))
         if species is None:
             return []
 
