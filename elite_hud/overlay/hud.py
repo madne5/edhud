@@ -421,6 +421,8 @@ class HudWindow(QWidget):
                 segment = self._ship_segment(lead())
             elif name == "missions":
                 segment = self._missions_segment(lead())
+            elif name == "unsold":
+                segment = self._unsold_segment(lead())
             if segment is not None:
                 segments.append(segment)
         return segments
@@ -505,6 +507,30 @@ class HudWindow(QWidget):
                 Span(f"{held}/{capacity}", color=color, bold=True),
             ],
             glyph_color=color,
+            lead=lead,
+        )
+
+    def _unsold_segment(self, lead: float) -> Segment | None:
+        """Value sampled or earned but not yet banked, which death would take.
+
+        Exobiology only. Exploration is deliberately absent: the journal says
+        what was sold but never what is held, and counting scans since the last
+        sale did not reproduce real sales, so it is not shown at all.
+        """
+        unsold = self.state.unsold
+        if not unsold.total:
+            return None
+        cfg = self.config.overlay
+        # Losing this on death is the point of showing it, so it reads as a
+        # warning once it is worth real money.
+        colour = cfg.danger if unsold.total >= self.config.alerts.min_value else cfg.foreground
+        return Segment(
+            glyph="gem" if cfg.show_glyphs else None,
+            spans=[
+                Span(f"{cfg.labels.unsold} ", color=cfg.foreground, dim=0.7),
+                Span(format_credits(unsold.total), color=colour, bold=True),
+            ],
+            glyph_color=colour,
             lead=lead,
         )
 

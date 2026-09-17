@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
 from .footfall import BodySurvey, FootfallPolicy
+from .unsold import UnsoldData
 
 log = logging.getLogger(__name__)
 
@@ -333,6 +334,8 @@ class GameState:
         self.exobiology = exobiology
         self.value_threshold = value_threshold
         self.footfall = footfall or FootfallPolicy()
+        #: Sampled or earned but not yet banked.
+        self.unsold = UnsoldData()
         #: Text of the first-footfall notification; config supplies the real one.
         self.footfall_label = footfall_label
         self.carrier_spool_seconds = carrier_spool_seconds
@@ -819,6 +822,13 @@ class GameState:
         was_logged = event.get("WasLogged")
         bonus = was_logged is False
 
+        # Only the final Analyse pass puts a sample in the hold; the Log and
+        # Sample passes are the earlier steps of the same sampling.
+        if event.get("ScanType") == "Analyse":
+            self.unsold.add_sample(
+                species.name, species.value, first_logged=bonus
+            )
+
         confidence = self.exobiology.assess_species(species, self.value_threshold)
         alerts: list[Alert] = []
         if confidence is not Confidence.NONE and body is not None:
@@ -826,6 +836,46 @@ class GameState:
 
         self._recompute_best()
         return alerts
+
+    # -- unsold value ------------------------------------------------------
+
+    def _on_SellOrganicData(self, event: dict) -> None:
+        """A sale empties the biological hold."""
+        data = event.get("BioData")
+        credits = 0
+        count = 0
+        if isinstance(data, list):
+            for raw in data:
+                if not isinstance(raw, dict):
+                    continue
+                credits += int(raw.get("Value") or 0) + int(raw.get("Bonus") or 0)
+                count += 1
+        self.unsold.clear_bio(credits=credits, samples=count)
+        log.info("sold %d organic samples for %s cr", count, f"{credits:,}")
+
+    def _on_Bounty(self, event: dict) -> None:
+        reward = event.get("Reward") or event.get("TotalReward")
+        if isinstance(reward, int):
+            self.unsold.add_voucher("bounty", reward)
+
+    def _on_FactionKillBond(self, event: dict) -> None:
+        reward = event.get("Reward")
+        if isinstance(reward, int):
+            self.unsold.add_voucher("bond", reward)
+
+    def _on_RedeemVoucher(self, event: dict) -> None:
+        amount = event.get("Amount")
+        self.unsold.redeem(
+            str(event.get("Type") or ""), amount if isinstance(amount, int) else 0
+        )
+
+    def _on_Died(self, event: dict) -> None:
+        """Dying loses unsold samples and vouchers; say so rather than hide it."""
+        lost = self.unsold.bio_credits + self.unsold.voucher_total
+        if lost:
+            log.info("died holding %s cr of unsold data", f"{lost:,}")
+        self.unsold.clear_bio()
+        self.unsold.vouchers.clear()
 
     def _on_CodexEntry(self, event: dict) -> list[Alert]:
         category = str(event.get("Category") or "")

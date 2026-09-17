@@ -59,6 +59,8 @@ class LabelConfig:
     no_system: str = "нет данных"
     #: notification title when landing on a body would be a first footfall
     footfall_first: str = "Первый след"
+    #: unredeemed value: "в кармане 343.3M"
+    unsold: str = "в кармане"
 
 
 @dataclass
@@ -95,9 +97,16 @@ class OverlayConfig:
     #: Segments shown in the bar, in order. Available: carrier, system, fss, bio.
     segments: list[str] = field(default_factory=lambda: ["carrier", "system", "fss", "bio"])
     #: Segments in the always-visible second row.
-    #: Available: mode, empire, federation, ship, missions.
+    #: Available: mode, empire, federation, ship, missions, unsold.
     status_segments: list[str] = field(
-        default_factory=lambda: ["mode", "empire", "federation", "ship", "missions"]
+        default_factory=lambda: [
+            "mode",
+            "empire",
+            "federation",
+            "ship",
+            "missions",
+            "unsold",
+        ]
     )
     #: Draw a subtle rounded plate behind the text.
     show_background: bool = True
@@ -374,7 +383,7 @@ class Config:
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
 VALID_SEGMENTS = {"carrier", "system", "fss", "bio"}
-VALID_STATUS_SEGMENTS = {"mode", "empire", "federation", "ship", "missions"}
+VALID_STATUS_SEGMENTS = {"mode", "empire", "federation", "ship", "missions", "unsold"}
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
 VALID_UPDATE_ASSETS = {"any", "installer", "portable"}
