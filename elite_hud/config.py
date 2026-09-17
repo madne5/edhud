@@ -67,6 +67,10 @@ class LabelConfig:
     balance: str = "баланс"
     #: faction influence in the current system: "Traders & Explorers Inc. 30%"
     influence: str = "влияние"
+    #: notoriety level: "Плохая репутация 3"
+    notoriety: str = "Плохая репутация"
+    #: unpaid fines
+    fines: str = "штраф"
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
     #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
@@ -112,7 +116,8 @@ class OverlayConfig:
         default_factory=lambda: ["carrier", "system", "balance", "fss", "bio"]
     )
     #: Segments in the always-visible second row.
-    #: Available: mode, empire, federation, ship, missions, unsold, next, faction.
+    #: Available: mode, empire, federation, ship, missions, unsold, next,
+    #: faction, crime.
     status_segments: list[str] = field(
         default_factory=lambda: [
             "mode",
@@ -122,6 +127,7 @@ class OverlayConfig:
             "missions",
             "next",
             "faction",
+            "crime",
             "unsold",
         ]
     )
@@ -464,6 +470,7 @@ STATUS_SEGMENT_NAMES: dict[str, str] = {
     "missions": "Миссии",
     "next": "Цель прыжка",
     "faction": "Фракция",
+    "crime": "Розыск",
     "unsold": "К зачислению",
 }
 
@@ -476,6 +483,7 @@ VALID_STATUS_SEGMENTS = {
     "unsold",
     "next",
     "faction",
+    "crime",
 }
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}

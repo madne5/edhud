@@ -1302,3 +1302,78 @@ class FactionSegmentTests(unittest.TestCase):
         hud = self._hud(state, config)
         self.assertNotIn("Traders", hud.bar_text())
         hud.close()
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class CrimeSegmentTests(unittest.TestCase):
+    """Notoriety and fines, shown only when there is something to show."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, state, config):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    def _state(self):
+        from elite_hud.state import GameState
+
+        config = Config()
+        return GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+
+    def test_a_clean_commander_sees_nothing(self) -> None:
+        """The common case must not cost a permanent "not wanted" on screen."""
+        config = Config()
+        state = self._state()
+        state.apply(
+            {
+                "event": "Statistics",
+                "Crime": {"Notoriety": 0, "Fines": 369, "Total_Fines": 2_288_015,
+                          "Bounties_Received": 122, "Total_Bounties": 439_400},
+            }
+        )
+        hud = self._hud(state, config)
+        self.assertNotIn("Плохая репутация", hud.bar_text())
+        self.assertNotIn("штраф", hud.bar_text())
+        hud.close()
+
+    def test_an_unpaid_fine_appears(self) -> None:
+        config = Config()
+        state = self._state()
+        state.apply({"event": "CommitCrime", "Fine": 200})
+        hud = self._hud(state, config)
+        text = hud.bar_text()
+        self.assertIn("штраф", text)
+        self.assertIn("200", text)
+        hud.close()
+
+    def test_notoriety_appears_and_is_red(self) -> None:
+        config = Config()
+        state = self._state()
+        state.apply({"event": "Statistics", "Crime": {"Notoriety": 3}})
+        hud = self._hud(state, config)
+        self.assertIn("Плохая репутация", hud.bar_text())
+        status = next(row for row in hud._rows if row.kind == "status")
+        segment = next(
+            segment
+            for segment in status.segments
+            if any("Плохая репутация" in span.text for span in segment.spans)
+        )
+        self.assertEqual(segment.glyph_color, config.overlay.danger)
+        hud.close()
+
+    def test_paying_the_fine_hides_it_again(self) -> None:
+        config = Config()
+        state = self._state()
+        state.apply({"event": "CommitCrime", "Fine": 200})
+        state.apply({"event": "PayFines", "Amount": 200, "AllFines": True})
+        hud = self._hud(state, config)
+        self.assertNotIn("штраф", hud.bar_text())
+        hud.close()

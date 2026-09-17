@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
+from .crime import CrimeRecord
 from .footfall import BodySurvey, FootfallPolicy
 from .materials import MaterialTable
 from .unsold import UnsoldData
@@ -451,6 +452,8 @@ class GameState:
         self.unsold = UnsoldData()
         #: Where the commander is heading next.
         self.jump_plan = JumpPlan()
+        #: Fines owed and notoriety.
+        self.crime = CrimeRecord()
         #: The faction we are following, in the current system.
         self.faction = FactionStatus(wanted=faction_name)
         self.faction_match = faction_match
@@ -559,6 +562,26 @@ class GameState:
     def settle(self, now: datetime | None = None) -> None:
         """Advance state that depends on the clock; call from the UI loop."""
         self.carrier.settle(now)
+
+    # -- crime -------------------------------------------------------------
+
+    def _on_Statistics(self, event: dict) -> None:
+        """The only place notoriety is reported, once per session start."""
+        crime = event.get("Crime")
+        if isinstance(crime, dict):
+            self.crime.observe_statistics(crime)
+
+    def _on_CommitCrime(self, event: dict) -> None:
+        fine = event.get("Fine")
+        amount = int(fine) if isinstance(fine, int) and not isinstance(fine, bool) else 0
+        self.crime.add_fine(amount, crime=str(event.get("CrimeType") or ""))
+
+    def _on_PayFines(self, event: dict) -> None:
+        amount = event.get("Amount")
+        self.crime.pay_fines(
+            int(amount) if isinstance(amount, int) and not isinstance(amount, bool) else 0,
+            all_fines=bool(event.get("AllFines")),
+        )
 
     # -- factions ----------------------------------------------------------
 
@@ -1178,9 +1201,19 @@ class GameState:
         log.info("sold %d organic samples for %s cr", count, f"{credits:,}")
 
     def _on_Bounty(self, event: dict) -> None:
-        reward = event.get("Reward") or event.get("TotalReward")
-        if isinstance(reward, int):
-            self.unsold.add_voucher("bounty", reward)
+        # Read Reward directly rather than with `or`: a zero reward is
+        # meaningful here, and `or` would discard it as falsy.
+        reward = event.get("Reward")
+        if reward is None:
+            reward = event.get("TotalReward")
+        if not isinstance(reward, int) or isinstance(reward, bool):
+            return
+        if reward <= 0:
+            # A zero reward is not a payout: it is a bounty issued against the
+            # commander, which the journal reports through the same event.
+            self.crime.add_bounty(0)
+            return
+        self.unsold.add_voucher("bounty", reward)
 
     def _on_FactionKillBond(self, event: dict) -> None:
         reward = event.get("Reward")

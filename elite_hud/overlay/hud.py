@@ -420,6 +420,8 @@ class HudWindow(QWidget):
                 segment = self._next_segment(0.0)
             elif name == "faction":
                 segment = self._faction_segment(0.0)
+            elif name == "crime":
+                segment = self._crime_segment(0.0)
             if segment is not None:
                 segments.append(segment)
         return self._apply_leads(segments, style.metrics.height() * 0.95)
@@ -504,6 +506,36 @@ class HudWindow(QWidget):
                 Span(f"{held}/{capacity}", color=color, bold=True),
             ],
             glyph_color=color,
+            lead=lead,
+        )
+
+    def _crime_segment(self, lead: float) -> Segment | None:
+        """Notoriety and unpaid fines.
+
+        Hidden entirely for a clean commander, which is the common case and
+        would otherwise be a permanent "not wanted" taking up room. Notoriety
+        comes from the Statistics event at login, so it is a snapshot rather
+        than a live figure; the fines are the part that moves during a session.
+        """
+        crime = self.state.crime
+        if crime.clean:
+            return None
+        cfg = self.config.overlay
+        # Notoriety is what gets a commander shot at, so it leads and it is red.
+        colour = cfg.danger if crime.notorious else cfg.foreground
+        spans: list[Span] = []
+        if crime.notoriety is not None:
+            spans.append(Span(f"{cfg.labels.notoriety} ", color=cfg.foreground, dim=0.7))
+            spans.append(Span(str(crime.notoriety), color=colour, bold=True))
+        if crime.fines:
+            if spans:
+                spans.append(Span("  ", color=cfg.foreground))
+            spans.append(Span(f"{cfg.labels.fines} ", color=cfg.foreground, dim=0.7))
+            spans.append(Span(format_credits(crime.fines), color=cfg.danger, bold=True))
+        return Segment(
+            glyph="warning" if cfg.show_glyphs else None,
+            spans=spans,
+            glyph_color=colour,
             lead=lead,
         )
 
