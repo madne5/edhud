@@ -23,6 +23,11 @@ tools/preview/
 /research/
 /.csrc/
 
+# Real player journals, kept locally for analysis. Never publish these: they
+# contain the commander name, every system visited and the whole play history.
+/-journal/
+/-journals/
+
 # Editors
 .idea/
 .vscode/
