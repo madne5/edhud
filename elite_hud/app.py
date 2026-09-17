@@ -26,6 +26,7 @@ from .config import (
 from .exobiology import Confidence, ExobiologyTable
 from .installation import SingleInstanceGuard
 from .journal.watcher import JournalWatcher
+from .notifications import Notification, NotificationCenter
 from .paths import expand_user_path, find_journal_dir
 from .state import Alert, GameState, parse_timestamp
 from .update_service import UpdateEvent, UpdateService
@@ -311,6 +312,9 @@ class HudApp:
                 ):
                     best = alert
 
+        if self.hud is not None:
+            self._publish_announcements()
+
         if best is not None:
             self._last_alert = best
             if self.hud is not None:
@@ -325,6 +329,32 @@ class HudApp:
                     f"{best.system} · {best.body}" if best.body else best.system,
                 )
         return changed
+
+    def _publish_announcements(self) -> None:
+        """Hand the state layer's queued announcements to the HUD.
+
+        These were being raised and quietly dropped before the notification
+        system existed, so a rank gained never reached the screen.
+        """
+        for announcement in self.state.drain_announcements():
+            log.info(
+                "NOTIFY [%s] %s%s",
+                announcement.kind,
+                announcement.title,
+                f" — {announcement.detail}" if announcement.detail else "",
+            )
+            self.hud.push_notification(
+                Notification(
+                    key=NotificationCenter.key_for(
+                        announcement.kind, announcement.detail
+                    ),
+                    title=announcement.title,
+                    detail=announcement.detail,
+                    glyph=announcement.glyph,
+                    tone=announcement.tone,
+                    value=announcement.value,
+                )
+            )
 
     def _log_alert(self, alert: Alert) -> None:
         payout = f" (payout {alert.payout:,})" if alert.bonus_applies else ""

@@ -64,6 +64,7 @@ PYSIDE_AVAILABLE = QT_SKIP_REASON is None
 
 from elite_hud.config import Config
 from elite_hud.exobiology import ExobiologyTable
+from elite_hud.notifications import Notification
 from elite_hud.state import Alert, Confidence, GameState
 
 
@@ -866,6 +867,146 @@ class MonitorSelectionTests(unittest.TestCase):
         values = [value for value, _ in choices]
         self.assertEqual(values, ["primary", "0", "1", "cursor"])
         self.assertIn("A", choices[1][1])
+
+
+class FakeClock:
+    """A monotonic clock the notification tests drive by hand."""
+
+    def __init__(self, start: float = 5000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class NotificationHudTests(unittest.TestCase):
+    """Notifications reach the screen through the HUD, not just the centre."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, config: Config | None = None, clock=None):
+        from elite_hud.overlay.hud import HudWindow
+
+        config = config or Config()
+        hud = HudWindow(config, make_state(config), clock=clock)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    @staticmethod
+    def _note(**kwargs) -> Notification:
+        fields = {"key": "rank:Empire", "title": "Граф", "glyph": "star"}
+        fields.update(kwargs)
+        return Notification(**fields)
+
+    def _notification_rows(self, hud):
+        return [row for row in hud._rows if row.kind == "notification"]
+
+    def test_a_pushed_notification_becomes_a_row(self) -> None:
+        hud = self._hud()
+        self.assertEqual(self._notification_rows(hud), [])
+        hud.push_notification(self._note(detail="Empire"))
+        rows = self._notification_rows(hud)
+        self.assertEqual(len(rows), 1)
+        text = " ".join(span.text for span in rows[0].segments[0].spans)
+        self.assertIn("Граф", text)
+        self.assertIn("Empire", text)
+        hud.close()
+
+    def test_the_accent_bar_uses_the_tone_colour(self) -> None:
+        config = Config()
+        hud = self._hud(config)
+        hud.push_notification(self._note(tone="danger"))
+        row = self._notification_rows(hud)[0]
+        self.assertEqual(row.accent, config.overlay.danger)
+        self.assertEqual(row.segments[0].glyph_color, config.overlay.danger)
+
+        hud.clear_alert()
+        hud.notifications.clear()
+        hud.push_notification(self._note(key="other", tone="success"))
+        row = self._notification_rows(hud)[0]
+        self.assertEqual(row.accent, config.overlay.success)
+        hud.close()
+
+    def test_the_notification_fades_in_and_settles(self) -> None:
+        clock = FakeClock()
+        hud = self._hud(clock=clock)
+        hud.push_notification(self._note())
+
+        first = self._notification_rows(hud)[0]
+        self.assertAlmostEqual(first.opacity, 0.0)
+        # Sliding down from above, so it is drawn higher than its final spot.
+        self.assertLess(first.offset, 0.0)
+
+        clock.advance(hud.config.notifications.fade_in_seconds)
+        hud.rebuild()
+        settled = self._notification_rows(hud)[0]
+        self.assertAlmostEqual(settled.opacity, 1.0)
+        self.assertAlmostEqual(settled.offset, 0.0)
+        hud.close()
+
+    def test_the_animation_timer_runs_only_while_something_moves(self) -> None:
+        clock = FakeClock()
+        hud = self._hud(clock=clock)
+        self.assertFalse(hud._animation_timer.isActive())
+
+        hud.push_notification(self._note())
+        self.assertTrue(hud._animation_timer.isActive())
+
+        clock.advance(hud.config.notifications.fade_in_seconds)
+        hud._tick_animation()
+        self.assertFalse(hud._animation_timer.isActive())
+        hud.close()
+
+    def test_repeats_fold_and_show_a_count(self) -> None:
+        hud = self._hud()
+        hud.push_notification(self._note())
+        hud.push_notification(self._note())
+        rows = self._notification_rows(hud)
+        self.assertEqual(len(rows), 1)
+        text = " ".join(span.text for span in rows[0].segments[0].spans)
+        self.assertIn("x2", text)
+        hud.close()
+
+    def test_different_kinds_get_their_own_lines(self) -> None:
+        hud = self._hud()
+        hud.push_notification(self._note())
+        hud.push_notification(self._note(key="footfall:Body 3", title="Первый след"))
+        self.assertEqual(len(self._notification_rows(hud)), 2)
+        hud.close()
+
+    def test_notifications_can_be_turned_off(self) -> None:
+        config = Config()
+        config.notifications.enabled = False
+        hud = self._hud(config)
+        hud.push_notification(self._note())
+        self.assertEqual(self._notification_rows(hud), [])
+        self.assertFalse(hud._animation_timer.isActive())
+        hud.close()
+
+    def test_the_bar_grows_to_fit_a_notification(self) -> None:
+        hud = self._hud()
+        before = hud.height()
+        hud.push_notification(self._note(detail="Empire"))
+        self.assertGreater(hud.height(), before)
+        hud.close()
+
+    def test_a_relayout_keeps_the_notification_visible(self) -> None:
+        """rebuild() runs on the countdown tick; it must not drop the row."""
+        hud = self._hud()
+        hud.push_notification(self._note())
+        for _ in range(3):
+            hud.rebuild()
+        self.assertEqual(len(self._notification_rows(hud)), 1)
+        hud.close()
 
 
 class PreviewFixtureTests(unittest.TestCase):

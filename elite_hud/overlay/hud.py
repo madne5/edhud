@@ -33,6 +33,7 @@ from ..formatting import (
     format_credits,
 )
 from ..state import Alert, GameState
+from ..notifications import Notification, NotificationCenter
 from . import win32
 from .icons import draw_glyph
 
@@ -139,6 +140,11 @@ class Row:
     plate: bool = True
     #: name used in tests and logs
     kind: str = "primary"
+    #: animation state, applied while painting so the layout never jitters
+    opacity: float = 1.0
+    offset: float = 0.0
+    #: colours a thin bar down the leading edge; "" draws none
+    accent: str = ""
 
     @property
     def is_empty(self) -> bool:
@@ -146,13 +152,21 @@ class Row:
 
 
 class HudWindow(QWidget):
-    def __init__(self, config: Config, state: GameState) -> None:
+    def __init__(self, config: Config, state: GameState, clock=None) -> None:
         super().__init__(None)
         self.config = config
         self.state = state
         self._alert: Alert | None = None
         self._alert_until = 0.0
         self._alert_pulse = 0.0
+        cfg = config.notifications
+        self.notifications = NotificationCenter(
+            max_visible=cfg.max_visible,
+            hold_seconds=cfg.hold_seconds,
+            fade_in=cfg.fade_in_seconds,
+            fade_out=cfg.fade_out_seconds,
+            **({} if clock is None else {"clock": clock}),
+        )
         self._segments: list[Segment] = []
         self._rows: list[Row] = []
         self._row_boxes: list[tuple[Row, float, float, float]] = []
@@ -198,6 +212,16 @@ class HudWindow(QWidget):
         self._screen_timer.setInterval(3000)
         self._screen_timer.timeout.connect(self._reposition)
         self._screen_timer.start()
+
+        # Notifications animate, which needs a faster repaint than the countdown
+        # tick. The timer only runs while something is actually moving: a HUD
+        # repainting at 60 Hz for a whole session inside a game is a real cost,
+        # and nothing is on screen most of the time.
+        self._animation_timer = QTimer(self)
+        self._animation_timer.setInterval(
+            max(8, int(1000.0 / max(1.0, config.notifications.animation_hz)))
+        )
+        self._animation_timer.timeout.connect(self._tick_animation)
 
     # -- window setup ------------------------------------------------------
 
@@ -278,6 +302,27 @@ class HudWindow(QWidget):
         self._alert_until = 0.0
         self.update()
 
+    def push_notification(self, notification: Notification) -> None:
+        """Show a timed notification, starting the animation timer if needed."""
+        if not self.config.notifications.enabled:
+            return
+        self.notifications.push(notification)
+        self._sync_animation_timer()
+        self.rebuild()
+
+    def _sync_animation_timer(self) -> None:
+        """Run the fast timer only while something is actually animating."""
+        wanted = self.config.notifications.enabled and self.notifications.animating()
+        if wanted and not self._animation_timer.isActive():
+            self._animation_timer.start()
+        elif not wanted and self._animation_timer.isActive():
+            self._animation_timer.stop()
+
+    def _tick_animation(self) -> None:
+        self.notifications.tick()
+        self.rebuild()
+        self._sync_animation_timer()
+
     def rebuild(self) -> None:
         """Recompute the bar contents, resizing and repositioning if needed."""
         self._alert_pulse = _monotonic()
@@ -303,7 +348,53 @@ class HudWindow(QWidget):
         status.segments = self._status_segments()
         if status.segments:
             rows.append(status)
+        rows.extend(self._notification_rows())
         return rows
+
+    def _notification_rows(self) -> list[Row]:
+        """One row per live notification, newest last, with its animation."""
+        if not self.config.notifications.enabled:
+            return []
+        rows: list[Row] = []
+        for entry in self.notifications.rendered():
+            item = entry.notification
+            colour = self._tone_colour(item.tone)
+            spans = [Span(item.title, color=colour, bold=True)]
+            if item.detail:
+                spans.append(
+                    Span(f"  {item.detail}", color=self.config.overlay.foreground, dim=0.78)
+                )
+            if item.count > 1:
+                spans.append(
+                    Span(f"  x{item.count}", color=colour, bold=True, dim=0.9)
+                )
+            rows.append(
+                Row(
+                    style=self._status_style,
+                    segments=[
+                        Segment(
+                            glyph=item.glyph if self.config.overlay.show_glyphs else None,
+                            spans=spans,
+                            glyph_color=colour,
+                        )
+                    ],
+                    kind="notification",
+                    gap=self._metrics.height() * 0.22,
+                    opacity=entry.opacity,
+                    offset=entry.offset,
+                    accent=colour,
+                )
+            )
+        return rows
+
+    def _tone_colour(self, tone: str) -> str:
+        """Map a notification's colour role onto the overlay palette."""
+        cfg = self.config.overlay
+        return {
+            "success": cfg.success,
+            "danger": cfg.danger,
+            "foreground": cfg.foreground,
+        }.get(tone, cfg.accent)
 
     def _status_segments(self) -> list[Segment]:
         """The always-visible second row."""
@@ -885,16 +976,34 @@ class HudWindow(QWidget):
 
         for row, y, plate_width, plate_height in self._row_boxes:
             style = row.style
+            if row.opacity <= 0.0:
+                continue
+            # The offset is applied here rather than in the layout so that a
+            # notification sliding into place cannot nudge the rows around it.
+            y += row.offset
             left = (self.width() - plate_width) / 2.0
             rect = QRectF(left + 0.5, y + 0.5, plate_width - 1.0, plate_height - 1.0)
             radius = min(rect.height() / 2.0, style.plate_radius)
 
             if cfg.show_background and row.plate:
                 background = QColor(cfg.background)
-                background.setAlpha(cfg.background_alpha)
+                background.setAlpha(int(cfg.background_alpha * row.opacity))
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(background)
                 painter.drawRoundedRect(rect, radius, radius)
+
+            if row.accent:
+                accent = QColor(row.accent)
+                accent.setAlphaF(row.opacity)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(accent)
+                bar = QRectF(
+                    rect.left() + style.padding_x * 0.35,
+                    rect.top() + rect.height() * 0.26,
+                    max(1.5, style.line_height * 0.09),
+                    rect.height() * 0.48,
+                )
+                painter.drawRoundedRect(bar, bar.width() / 2.0, bar.width() / 2.0)
 
             # The alert outline belongs to the row that carries the alert.
             if row.kind == "primary" and self._alert is not None:
@@ -915,6 +1024,8 @@ class HudWindow(QWidget):
                 x += segment.lead
                 if segment.glyph is not None:
                     glyph_color = QColor(segment.glyph_color or cfg.foreground)
+                    if row.opacity < 1.0:
+                        glyph_color.setAlphaF(glyph_color.alphaF() * row.opacity)
                     draw_glyph(
                         painter,
                         x,
@@ -929,8 +1040,9 @@ class HudWindow(QWidget):
                     font = style.bold_font if span.bold else style.font
                     metrics = style.metrics_for(span.bold)
                     color = QColor(span.color or cfg.foreground)
-                    if span.dim < 1.0:
-                        color.setAlphaF(max(0.0, min(1.0, color.alphaF() * span.dim)))
+                    alpha = color.alphaF() * min(1.0, span.dim) * row.opacity
+                    if alpha < 1.0:
+                        color.setAlphaF(max(0.0, min(1.0, alpha)))
                     painter.setFont(font)
                     painter.setPen(color)
                     painter.drawText(QPointF(x, baseline), span.text)
@@ -943,6 +1055,7 @@ class HudWindow(QWidget):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._topmost_timer.stop()
         self._screen_timer.stop()
+        self._animation_timer.stop()
         super().closeEvent(event)
 
 

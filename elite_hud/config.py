@@ -121,6 +121,26 @@ class AlertConfig:
 
 
 @dataclass
+class NotificationConfig:
+    """Timed on-screen notifications, shared by every feature that raises one.
+
+    These live in config rather than in code because how long a line should
+    linger is a taste question, and the answer differs per commander and per
+    feature.
+    """
+
+    enabled: bool = True
+    #: How many may be on screen at once; the oldest gives way beyond this.
+    max_visible: int = 3
+    #: Seconds held at full opacity. Fades sit outside this.
+    hold_seconds: float = 6.0
+    fade_in_seconds: float = 0.18
+    fade_out_seconds: float = 0.45
+    #: Repaint rate while something is animating. Only runs while it matters.
+    animation_hz: float = 60.0
+
+
+@dataclass
 class CarrierConfig:
     """Fleet carrier jump timings.
 
@@ -190,6 +210,7 @@ class Config:
     journal: JournalConfig = field(default_factory=JournalConfig)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
@@ -213,6 +234,7 @@ class Config:
         _merge(config.overlay, raw.get("overlay"))
         _merge(config.overlay.labels, raw.get("overlay", {}).get("labels"))
         _merge(config.alerts, raw.get("alerts"))
+        _merge(config.notifications, raw.get("notifications"))
         _merge(config.carrier, raw.get("carrier"))
         _merge(config.commander, raw.get("commander"))
         _merge(config.update, raw.get("update"))
@@ -258,6 +280,13 @@ class Config:
             )
             alerts.sound_min_confidence = "guaranteed"
 
+        notifications = self.notifications
+        notifications.max_visible = max(1, int(notifications.max_visible))
+        notifications.hold_seconds = max(0.0, float(notifications.hold_seconds))
+        notifications.fade_in_seconds = max(0.0, float(notifications.fade_in_seconds))
+        notifications.fade_out_seconds = max(0.0, float(notifications.fade_out_seconds))
+        notifications.animation_hz = min(120.0, max(5.0, float(notifications.animation_hz)))
+
         self.journal.poll_interval = min(10.0, max(0.05, float(self.journal.poll_interval)))
         self.journal.history_days = max(0, int(self.journal.history_days))
 
@@ -292,6 +321,7 @@ class Config:
             ("journal", self.journal),
             ("overlay", self.overlay),
             ("alerts", self.alerts),
+            ("notifications", self.notifications),
             ("carrier", self.carrier),
             ("commander", self.commander),
             ("update", self.update),
