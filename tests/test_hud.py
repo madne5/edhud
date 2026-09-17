@@ -869,6 +869,161 @@ class MonitorSelectionTests(unittest.TestCase):
         self.assertIn("A", choices[1][1])
 
 
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class RowAlignmentTests(unittest.TestCase):
+    """No row may start with a gap. The plate is centred, so a leading gap
+    shifts the text right inside it and reads as a bigger left margin than
+    right -- the plate itself stays centred, which is what made this look like
+    a painting bug rather than a layout one."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, config: Config, state: GameState):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    def test_the_primary_row_never_starts_with_a_gap(self) -> None:
+        """A missing carrier segment must not push the system segment along."""
+        config = Config()
+        state = make_state(config)
+        # No carrier jump pending, so the first configured segment is absent.
+        hud = self._hud(config, state)
+        primary = next(row for row in hud._rows if row.kind == "primary")
+        self.assertEqual(primary.segments[0].lead, 0.0)
+        for segment in primary.segments[1:]:
+            self.assertGreater(segment.lead, 0.0)
+        hud.close()
+
+    def test_the_status_row_never_starts_with_a_gap(self) -> None:
+        config = Config()
+        state = make_state(config)
+        # No LoadGame, so there is no game mode and the first segment drops out.
+        self.assertEqual(state.game_mode, "")
+        hud = self._hud(config, state)
+        status = next(row for row in hud._rows if row.kind == "status")
+        self.assertEqual(status.segments[0].lead, 0.0)
+        hud.close()
+
+    def test_missions_being_unknown_does_not_gap_the_row(self) -> None:
+        config = Config()
+        state = make_state(config)
+        state.missions_known = False
+        hud = self._hud(config, state)
+        status = next(row for row in hud._rows if row.kind == "status")
+        self.assertEqual(status.segments[0].lead, 0.0)
+        hud.close()
+
+    def test_the_alert_segment_leads_the_primary_row(self) -> None:
+        """With an alert the alert comes first and itself starts the row."""
+        config = Config()
+        state = make_state(config)
+        alert = Alert(
+            key="k",
+            title="Stratum",
+            detail="",
+            value=20_000_000,
+            confidence=Confidence.CONFIRMED,
+            system="Synuefe PK-V b48-0",
+            body="Synuefe PK-V b48-0 5",
+        )
+        hud = self._hud(config, state)
+        hud.push_alert(alert)
+        hud.rebuild()
+        primary = next(row for row in hud._rows if row.kind == "primary")
+        self.assertEqual(primary.segments[0].lead, 0.0)
+        hud.close()
+
+    def test_text_sits_symmetrically_inside_the_plate(self) -> None:
+        """The real complaint: the margins either side of the text differ."""
+        from PySide6.QtGui import QImage, QPainter
+
+        config = Config()
+        hud = self._hud(config, make_state(config))
+        image = QImage(hud.size(), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        painter = QPainter(image)
+        hud.render(painter)
+        painter.end()
+
+        row, y, plate_width, plate_height = next(
+            box for box in hud._row_boxes if box[0].kind == "status"
+        )
+        plate_left = (hud.width() - plate_width) / 2.0
+        plate_right = plate_left + plate_width
+        painted = column_extent(image, 0, image.width())
+        self.assertIsNotNone(painted)
+        top, bottom = painted
+        # Horizontal extent of the painted row, restricted to that row's band.
+        leftmost = image.width()
+        rightmost = 0
+        for x in range(image.width()):
+            for yy in range(int(y) + 2, int(y + plate_height) - 2):
+                if yy < image.height() and ((image.pixel(x, yy) >> 24) & 0xFF) > 60:
+                    leftmost = min(leftmost, x)
+                    rightmost = max(rightmost, x)
+        self.assertLess(leftmost, image.width())
+        left_margin = leftmost - plate_left
+        right_margin = plate_right - rightmost
+        # The plate edge and the glyph edge both round; a pixel of slack either
+        # way is fine, the bug this guards against was a whole line height.
+        self.assertAlmostEqual(left_margin, right_margin, delta=2.0)
+        self.assertIsNotNone((top, bottom))
+        hud.close()
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class BalanceSegmentTests(unittest.TestCase):
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, state, config):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    def test_no_balance_before_the_journal_reports_one(self) -> None:
+        config = Config()
+        hud = self._hud(make_state(config), config)
+        self.assertNotIn("баланс", hud.bar_text())
+        hud.close()
+
+    def test_the_balance_appears_once_known(self) -> None:
+        from elite_hud.status import parse_status
+
+        config = Config()
+        state = make_state(config)
+        state.apply({"event": "LoadGame", "Commander": "Madne5", "Credits": 3_322_947_321})
+        hud = self._hud(state, config)
+        self.assertIn("баланс", hud.bar_text())
+        self.assertIn("3.3B", hud.bar_text())
+        hud.close()
+
+    def test_a_live_status_balance_replaces_the_journal_one(self) -> None:
+        from elite_hud.status import parse_status
+
+        config = Config()
+        state = make_state(config)
+        state.apply({"event": "LoadGame", "Credits": 1})
+        state.apply_status(parse_status({"Balance": 4_229_279_956}))
+        hud = self._hud(state, config)
+        self.assertIn("4.2B", hud.bar_text())
+        hud.close()
+
+
 class FakeClock:
     """A monotonic clock the notification tests drive by hand."""
 

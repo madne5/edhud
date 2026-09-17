@@ -59,8 +59,12 @@ class LabelConfig:
     no_system: str = "нет данных"
     #: notification title when landing on a body would be a first footfall
     footfall_first: str = "Первый след"
-    #: unredeemed value: "в кармане 343.3M"
-    unsold: str = "в кармане"
+    #: unredeemed value: "К зачислению 343.3M"
+    unsold: str = "К зачислению"
+    #: suffix naming how many samples back the figure: "5 проб"
+    unsold_samples: str = "проб"
+    #: credit balance in the top row
+    balance: str = "баланс"
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
     #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
@@ -102,7 +106,9 @@ class OverlayConfig:
     danger: str = "#ff5555"
     success: str = "#5ee08a"
     #: Segments shown in the bar, in order. Available: carrier, system, fss, bio.
-    segments: list[str] = field(default_factory=lambda: ["carrier", "system", "fss", "bio"])
+    segments: list[str] = field(
+        default_factory=lambda: ["carrier", "system", "balance", "fss", "bio"]
+    )
     #: Segments in the always-visible second row.
     #: Available: mode, empire, federation, ship, missions, unsold, next.
     status_segments: list[str] = field(
@@ -410,7 +416,7 @@ class Config:
 
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
-VALID_SEGMENTS = {"carrier", "system", "fss", "bio"}
+VALID_SEGMENTS = {"carrier", "system", "fss", "bio", "balance"}
 VALID_STATUS_SEGMENTS = {
     "mode",
     "empire",

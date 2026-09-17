@@ -401,33 +401,26 @@ class HudWindow(QWidget):
         cfg = self.config.overlay
         style = self._status_style
         segments: list[Segment] = []
-        first = True
-
-        def lead() -> float:
-            nonlocal first
-            value = 0.0 if first else style.metrics.height() * 0.95
-            first = False
-            return value
 
         for name in cfg.status_segments:
             segment: Segment | None = None
             if name == "mode":
-                segment = self._mode_segment(lead())
+                segment = self._mode_segment(0.0)
             elif name == "empire":
-                segment = self._superpower_segment("Empire", lead())
+                segment = self._superpower_segment("Empire", 0.0)
             elif name == "federation":
-                segment = self._superpower_segment("Federation", lead())
+                segment = self._superpower_segment("Federation", 0.0)
             elif name == "ship":
-                segment = self._ship_segment(lead())
+                segment = self._ship_segment(0.0)
             elif name == "missions":
-                segment = self._missions_segment(lead())
+                segment = self._missions_segment(0.0)
             elif name == "unsold":
-                segment = self._unsold_segment(lead())
+                segment = self._unsold_segment(0.0)
             elif name == "next":
-                segment = self._next_segment(lead())
+                segment = self._next_segment(0.0)
             if segment is not None:
                 segments.append(segment)
-        return segments
+        return self._apply_leads(segments, style.metrics.height() * 0.95)
 
     def _mode_segment(self, lead: float) -> Segment | None:
         mode = self.state.game_mode
@@ -550,12 +543,24 @@ class HudWindow(QWidget):
         # Losing this on death is the point of showing it, so it reads as a
         # warning once it is worth real money.
         colour = cfg.danger if unsold.total >= self.config.alerts.min_value else cfg.foreground
+        spans = [
+            Span(f"{cfg.labels.unsold} ", color=cfg.foreground, dim=0.7),
+            Span(format_credits(unsold.total), color=colour, bold=True),
+        ]
+        # The sample count is what makes the figure checkable: a total that
+        # looks wrong can be traced to either the number of samples or the value
+        # of each one, and those are very different bugs.
+        if unsold.bio_count:
+            spans.append(
+                Span(
+                    f" ({unsold.bio_count} {cfg.labels.unsold_samples})",
+                    color=cfg.foreground,
+                    dim=0.68,
+                )
+            )
         return Segment(
             glyph="gem" if cfg.show_glyphs else None,
-            spans=[
-                Span(f"{cfg.labels.unsold} ", color=cfg.foreground, dim=0.7),
-                Span(format_credits(unsold.total), color=colour, bold=True),
-            ],
+            spans=spans,
             glyph_color=colour,
             lead=lead,
         )
@@ -566,18 +571,11 @@ class HudWindow(QWidget):
         cfg = self.config.overlay
         labels = cfg.labels
         segments: list[Segment] = []
-        first = True
-
-        def lead() -> float:
-            nonlocal first
-            value = 0.0 if first else self._metrics.height() * 0.95
-            first = False
-            return value
 
         if self._alert is not None:
-            segments.append(self._alert_segment(lead()))
+            segments.append(self._alert_segment(0.0))
             if not self.state.system.name:
-                return segments
+                return self._apply_leads(segments, self._metrics.height() * 0.95)
 
         for name in cfg.segments:
             # The alert already names the organic and its value, so the summary
@@ -586,15 +584,19 @@ class HudWindow(QWidget):
                 continue
             segment: Segment | None = None
             if name == "carrier":
-                segment = self._carrier_segment(lead())
+                segment = self._carrier_segment(0.0)
             elif name == "system":
-                segment = self._system_segment(lead())
+                segment = self._system_segment(0.0)
+            elif name == "balance":
+                segment = self._balance_segment(0.0)
             elif name == "fss":
-                segment = self._fss_segment(lead())
+                segment = self._fss_segment(0.0)
             elif name == "bio":
-                segment = self._bio_segment(lead())
+                segment = self._bio_segment(0.0)
             if segment is not None:
                 segments.append(segment)
+
+        self._apply_leads(segments, self._metrics.height() * 0.95)
 
         if not segments:
             segments.append(
@@ -606,6 +608,28 @@ class HudWindow(QWidget):
                 )
             )
         return segments
+
+    def _balance_segment(self, lead: float) -> Segment | None:
+        """The credit balance.
+
+        Nothing in the journal reports the balance changing, so this comes from
+        Status.json. The journal's value from the last LoadGame is used until
+        the status file reports one, and status_live records which it is, so a
+        stale figure is never presented as live.
+        """
+        if self.state.credits is None:
+            return None
+        cfg = self.config.overlay
+        colour = cfg.success if self.state.status_live else cfg.foreground
+        return Segment(
+            glyph="scales" if cfg.show_glyphs else None,
+            spans=[
+                Span(f"{cfg.labels.balance} ", color=cfg.foreground, dim=0.7),
+                Span(format_credits(self.state.credits), color=colour, bold=True),
+            ],
+            glyph_color=colour,
+            lead=lead,
+        )
 
     def _alert_segment(self, lead: float) -> Segment:
         cfg = self.config.overlay
@@ -793,6 +817,21 @@ class HudWindow(QWidget):
         return self.row_text(primary) if primary is not None else ""
 
     # -- layout & painting -------------------------------------------------
+
+    def _apply_leads(self, segments: list[Segment], gap: float) -> list[Segment]:
+        """Give each segment a gap before it, but never at the start of a row.
+
+        Deciding the gap at the moment a segment is built is wrong, because a
+        segment that turns out to be absent has already consumed the "no gap"
+        case: the next segment then inherits a gap that lands at the start of
+        the row. The plate width counts it, so the plate stays centred while the
+        text inside it shifts right -- which reads as a bigger left margin than
+        right, on both rows. Assigning the gaps once the surviving segments are
+        known avoids that entirely.
+        """
+        for index, segment in enumerate(segments):
+            segment.lead = 0.0 if index == 0 else gap
+        return segments
 
     def _measure(self, row: Row) -> float:
         """Total width of one row's segments, excluding its padding."""

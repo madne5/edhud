@@ -30,6 +30,7 @@ from .journal.watcher import JournalWatcher
 from .notifications import Notification, NotificationCenter
 from .paths import expand_user_path, find_journal_dir
 from .state import Alert, GameState, parse_timestamp
+from .status import StatusReader
 from .update_service import UpdateEvent, UpdateService
 
 log = logging.getLogger("elite_hud")
@@ -287,6 +288,7 @@ class HudApp:
         self.tray = None
         self._app = None
         self._last_alert: Alert | None = None
+        self.status_reader: StatusReader | None = None
         self._pending_sound = False
 
         self.update_events: queue.Queue[UpdateEvent] = queue.Queue()
@@ -305,6 +307,22 @@ class HudApp:
 
     def _on_journal_event(self, event: dict) -> None:
         self.events.put(event)
+
+    def _poll_status(self) -> None:
+        """Read Status.json for the values the journal never reports."""
+        reader = getattr(self, "status_reader", None)
+        if reader is None:
+            return
+        snapshot = reader.poll()
+        if snapshot is not None:
+            self.state.apply_status(snapshot)
+
+    def _start_status_reader(self, journal_dir) -> None:
+        """Begin polling the status file beside the journal."""
+        if journal_dir is None:
+            return
+        self.status_reader = StatusReader.beside(Path(journal_dir))
+        log.info("reading live status from %s", self.status_reader.path)
 
     def _drain(self) -> bool:
         """Apply queued events. Returns True when something changed."""
@@ -433,6 +451,7 @@ class HudApp:
     def _tick(self) -> None:
         # Advance anything that depends on the clock before drawing.
         self.state.settle()
+        self._poll_status()
         self._drain()
         self._drain_updates()
         if self._pending_sound:
@@ -491,6 +510,7 @@ class HudApp:
             )
             return
         log.info("watching %s", directory)
+        self._start_status_reader(directory)
         self.watcher = JournalWatcher(
             directory,
             self._on_journal_event,

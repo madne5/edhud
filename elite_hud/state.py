@@ -395,6 +395,10 @@ class GameState:
         self.unsold = UnsoldData()
         #: Where the commander is heading next.
         self.jump_plan = JumpPlan()
+        #: Live values that only Status.json reports.
+        self.legal_state = ""
+        #: True while the status file is the source of the balance.
+        self.status_live = False
         #: Rarity and canonical names; the journal supplies localised names.
         self.material_table = material_table or MaterialTable()
         #: Journal symbol (lowercase) -> how many are held.
@@ -496,6 +500,25 @@ class GameState:
     def settle(self, now: datetime | None = None) -> None:
         """Advance state that depends on the clock; call from the UI loop."""
         self.carrier.settle(now)
+
+    # -- status file -------------------------------------------------------
+
+    def apply_status(self, snapshot) -> None:
+        """Fold in a Status.json snapshot.
+
+        Only fields the snapshot actually carries are applied. The game empties
+        this file on exit, and a stub must not wipe a balance the journal
+        already gave us from the last LoadGame.
+        """
+        if snapshot.balance is not None:
+            self.credits = snapshot.balance
+            self.status_live = True
+        elif snapshot.empty and self.status_live:
+            # The file went back to its post-exit stub: stop claiming to be live
+            # rather than keep showing a number nothing is updating.
+            self.status_live = False
+        if snapshot.legal_state:
+            self.legal_state = snapshot.legal_state
 
     # -- session / location ------------------------------------------------
 
