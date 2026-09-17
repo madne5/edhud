@@ -111,7 +111,15 @@ LADDERS: dict[str, Ladder] = {
 SUPERPOWERS = ("Empire", "Federation")
 
 #: Ranks worth announcing when they change.
-ANNOUNCED = ("Combat", "Trade", "Explore", "Soldier", "Exobiologist", "CQC")
+#:
+#: This is every ladder, superpowers included. It previously left the two
+#: superpowers out on the grounds that their ranks are always on screen anyway
+#: -- but ``Promotion`` is the only event that reports a rank changing mid
+#: session, so skipping them there meant a promotion to Count or Admiral was
+#: neither announced nor stored, and the HUD kept showing the old rank until
+#: the game was restarted. Two of the three promotions in the journals we test
+#: against are Imperial, so this was not a rare corner.
+ANNOUNCED = TRACKS
 
 
 def ladder(track: str) -> Ladder | None:

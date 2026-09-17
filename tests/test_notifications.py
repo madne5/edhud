@@ -230,3 +230,91 @@ class NotificationTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnnouncementPipelineTests(unittest.TestCase):
+    """State -> app -> HUD handoff, without Qt in the way.
+
+    The state layer was raising these and nothing read them, so a rank gained
+    never reached the screen. This pins the whole path.
+    """
+
+    def _state(self):
+        from elite_hud.config import Config
+        from elite_hud.exobiology import ExobiologyTable
+        from elite_hud.state import GameState
+
+        config = Config()
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state.apply({"event": "Fileheader", "Odyssey": True})
+        return state
+
+    def _publisher(self, state):
+        """A stand-in app exposing the real method and nothing else."""
+        from elite_hud.app import HudApp
+
+        class FakeHud:
+            def __init__(self) -> None:
+                self.pushed = []
+
+            def push_notification(self, notification) -> None:
+                self.pushed.append(notification)
+
+        class Publisher:
+            _publish_announcements = HudApp._publish_announcements
+
+            def __init__(self) -> None:
+                self.state = state
+                self.hud = FakeHud()
+
+        return Publisher()
+
+    def test_a_promotion_reaches_the_hud(self) -> None:
+        state = self._state()
+        state.apply({"event": "Rank", "Empire": 8, "Federation": 6, "Combat": 3})
+        # Promotion carries the NEW index and is the only event that reports a
+        # rank changing mid-session.
+        state.apply({"event": "Promotion", "Empire": 9})
+
+        publisher = self._publisher(state)
+        publisher._publish_announcements()
+
+        self.assertEqual(len(publisher.hud.pushed), 1)
+        note = publisher.hud.pushed[0]
+        self.assertEqual(note.title, "Граф")
+        self.assertEqual(note.key, "rank:Empire")
+        self.assertEqual(note.tone, "success")
+        self.assertEqual(note.glyph, "star")
+        self.assertEqual(note.value, 9)
+        # The stored rank must move too, or the status row keeps showing the
+        # old title until the game restarts.
+        self.assertEqual(state.ranks["Empire"], 9)
+
+    def test_two_simultaneous_promotions_stay_separate(self) -> None:
+        state = self._state()
+        state.apply({"event": "Rank", "Empire": 8, "Federation": 5})
+        state.apply({"event": "Promotion", "Empire": 9, "Federation": 6})
+
+        publisher = self._publisher(state)
+        publisher._publish_announcements()
+
+        keys = [note.key for note in publisher.hud.pushed]
+        self.assertEqual(sorted(keys), ["rank:Empire", "rank:Federation"])
+
+    def test_announcements_are_drained_not_replayed(self) -> None:
+        """A second tick must not re-announce the same promotion."""
+        state = self._state()
+        state.apply({"event": "Rank", "Empire": 8})
+        state.apply({"event": "Promotion", "Empire": 9})
+
+        publisher = self._publisher(state)
+        publisher._publish_announcements()
+        publisher._publish_announcements()
+        self.assertEqual(len(publisher.hud.pushed), 1)
+
+    def test_nothing_is_raised_without_a_promotion(self) -> None:
+        state = self._state()
+        state.apply({"event": "Rank", "Empire": 8})
+        publisher = self._publisher(state)
+        publisher._publish_announcements()
+        self.assertEqual(publisher.hud.pushed, [])
