@@ -395,9 +395,8 @@ class HudApp:
             )
             self.hud.push_notification(
                 Notification(
-                    key=NotificationCenter.key_for(
-                        announcement.kind, announcement.detail
-                    ),
+                    key=announcement.key
+                    or NotificationCenter.key_for(announcement.kind, announcement.detail),
                     title=announcement.title,
                     detail=announcement.detail,
                     glyph=announcement.glyph,
@@ -567,7 +566,11 @@ class HudApp:
 
         tray = QSystemTrayIcon(icon_pixmap(64, "bio", QColor(self.config.overlay.accent)))
         tray.setToolTip(f"elite-hud {__version__}")
-        tray.activated.connect(lambda reason: self._toggle_hud())
+        # Qt's Windows plugin emits activated(Context) immediately before it
+        # pops the context menu, so toggling on every reason meant the overlay
+        # was hidden or shown every time the commander opened the menu -- which
+        # is the only documented way to reach Quit.
+        tray.activated.connect(self._on_tray_activated)
 
         menu = QMenu()
         menu.addAction("Показать / скрыть HUD", self._toggle_hud)
@@ -614,6 +617,12 @@ class HudApp:
     def _set_faction(self, name: str) -> None:
         self.config.faction.name = name
         self.config.validate()
+        # The state holds its own copy of the name, taken once at start-up, so
+        # writing only the config left a running HUD matching the previous
+        # faction while the tray and the log claimed the new one. The
+        # announcement below would have been wrong about its own effect.
+        self.state.faction.wanted = self.config.faction.name
+        self.state.faction.clear()
         path = default_config_path(self.options.config)
         persisted = set_config_value(path, "faction", "name", name)
         action = self._faction_actions.get("status")
@@ -668,6 +677,16 @@ class HudApp:
             self.hud.rebuild()
         note = "" if persisted else " (не сохранилось в config.toml)"
         log.info("overlay.%s = %s%s", key, getattr(self.config.overlay, key), note)
+
+    def _on_tray_activated(self, reason) -> None:
+        """Toggle the overlay on a real click, not on the menu opening."""
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._toggle_hud()
 
     def _build_monitor_menu(self, menu) -> None:
         """Let the user pick a display without editing the config by hand."""

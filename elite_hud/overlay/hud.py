@@ -329,6 +329,11 @@ class HudWindow(QWidget):
         if self._alert is not None and _monotonic() >= self._alert_until:
             self._alert = None
 
+        # Pruned here as well as on the animation timer: the timer only runs
+        # while something is moving, and an item that has finished fading must
+        # not linger in the centre where the next push would fold into it.
+        self.notifications.tick()
+
         self._rows = self._compose_rows()
         # Kept as an alias so the primary row's segments remain directly
         # reachable, which the tests and the widen/shrink logic both use.
@@ -1075,8 +1080,11 @@ class HudWindow(QWidget):
         if key in ("", "primary", "main", "default"):
             return self.primary_screen()
 
-        if key.lstrip("+-").isdigit():
+        try:
             index = int(key)
+        except ValueError:
+            index = None
+        if index is not None:
             if 0 <= index < len(screens):
                 return screens[index]
             log.warning(

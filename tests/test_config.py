@@ -499,3 +499,112 @@ class ConfigEscapingTests(unittest.TestCase):
         reloaded = Config.load(path)
         self.assertEqual(reloaded.overlay.font_size, 15)
         self.assertEqual(reloaded.faction.name, 'Quote " here')
+
+
+class SectionPlacementTests(unittest.TestCase):
+    """Where a written key lands, and never declaring a table twice.
+
+    Both failures here were silent: the caller was told the write succeeded, and
+    the damage only showed up on the next start as a setting that would not
+    stick, or as the entire file silently reverting to defaults.
+    """
+
+    def _file(self, text: str) -> Path:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_key_goes_into_its_own_section_not_the_last_one(self) -> None:
+        path = self._file("[faction]\nmatch = \"contains\"\n\n[alerts]\nmin_value = 5\n")
+        set_config_value(path, "faction", "name", "Traders & Explorers")
+        self.assertEqual(Config.load(path).faction.name, "Traders & Explorers")
+        self.assertEqual(Config.load(path).alerts.min_value, 5)
+
+    def test_a_deleted_key_is_restored_into_its_section(self) -> None:
+        """The file promises deleting a line falls back to the default."""
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        ensure_config_file(path)
+        text = path.read_text(encoding="utf-8").replace('name = ""\n', "", 1)
+        path.write_text(text, encoding="utf-8")
+        set_config_value(path, "faction", "name", "X")
+        self.assertEqual(Config.load(path).faction.name, "X")
+
+    def test_an_empty_section_gets_a_key_without_a_second_header(self) -> None:
+        """A duplicate [table] makes the whole file unparseable in TOML."""
+        path = self._file("[faction]\n")
+        set_config_value(path, "faction", "name", "X")
+        self.assertEqual(path.read_text(encoding="utf-8").count("[faction]"), 1)
+        self.assertEqual(Config.load(path).faction.name, "X")
+
+    def test_a_dotted_declaration_is_extended_with_a_dotted_key(self) -> None:
+        """A bare key inserted after `faction.match = ...` would land at the
+        top level, not in the table."""
+        path = self._file('faction.match = "contains"\n')
+        set_config_value(path, "faction", "name", "X")
+        self.assertNotIn("[faction]", path.read_text(encoding="utf-8"))
+        self.assertEqual(Config.load(path).faction.name, "X")
+
+    def test_a_missing_section_is_created(self) -> None:
+        path = self._file('[journal]\npath = ""\n')
+        set_config_value(path, "faction", "name", "X")
+        self.assertEqual(Config.load(path).faction.name, "X")
+        self.assertEqual(Config.load(path).journal.path, "")
+
+    def test_compound_values_are_not_split_or_dropped(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        ensure_config_file(path)
+        set_config_value(path, "faction", "name", 'A "B" \\ C & D')
+        self.assertEqual(Config.load(path).faction.name, 'A "B" \\ C & D')
+
+
+class SectionDetectionTests(unittest.TestCase):
+    """A table declared twice breaks the file permanently, so detection must
+    see every way TOML can declare one."""
+
+    def _file(self, text: str) -> Path:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_dotted_key_records_the_table_as_present(self) -> None:
+        path = self._file('overlay.monitor = "1"\n')
+        add_missing_sections(path)
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.overlay.monitor, "1")
+        self.assertNotIn("[overlay]", path.read_text(encoding="utf-8"))
+
+    def test_a_header_with_a_trailing_comment_counts_as_present(self) -> None:
+        path = self._file("[journal] # journal folder\npath = \"\"\n")
+        add_missing_sections(path)
+        self.assertEqual(Config.load(path).journal.path, "")
+        self.assertEqual(path.read_text(encoding="utf-8").count("[journal]"), 1)
+
+    def test_a_one_line_dotted_config_survives_migration(self) -> None:
+        """This shape used to become permanently unparseable."""
+        path = self._file("overlay.enabled = false\n")
+        add_missing_sections(path)
+        self.assertFalse(Config.load(path).overlay.enabled)
+        add_missing_sections(path)
+        self.assertFalse(Config.load(path).overlay.enabled)
+
+
+class MalformedSectionTests(unittest.TestCase):
+    """A scalar where a table belongs is valid TOML and used to be fatal."""
+
+    def _load(self, text: str) -> Config:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return Config.load(path)
+
+    def test_a_boolean_section_does_not_stop_startup(self) -> None:
+        self.assertEqual(self._load("overlay = false").overlay.font_size, 13)
+
+    def test_a_number_section_does_not_stop_startup(self) -> None:
+        self.assertEqual(self._load("exobiology = 3").exobiology_overrides, {})
+
+    def test_a_string_section_does_not_stop_startup(self) -> None:
+        self.assertEqual(self._load('overlay = "top-center"').overlay.monitor, "primary")
+
+    def test_other_settings_still_load_alongside_it(self) -> None:
+        config = self._load('overlay = false\n[alerts]\nmin_value = 1234\n')
+        self.assertEqual(config.alerts.min_value, 1234)

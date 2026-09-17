@@ -160,7 +160,9 @@ class NotificationCenter:
         should stay on screen; the timings belong here.
         """
         fields = {
-            "key": self.key_for(announcement.kind, announcement.detail),
+            # An announcement may name its own identity when the detail is
+            # display text; otherwise kind plus detail identifies it.
+            "key": announcement.key or self.key_for(announcement.kind, announcement.detail),
             "title": announcement.title,
             "detail": announcement.detail,
             "glyph": announcement.glyph,
@@ -180,15 +182,16 @@ class NotificationCenter:
         return next((item for item in self._items if item.key == key), None)
 
     def _enforce_limit(self) -> None:
-        """Never hold more than ``max_visible``; the oldest gives way.
+        """Never hold more than ``max_visible``; the soonest to expire gives way.
 
-        Expiring the oldest immediately rather than queueing it is deliberate.
-        A burst of notifications is almost always a burst of one kind of thing,
-        and a queue would replay a stale backlog long after it stopped being
-        true.
+        Dropping by position rather than by expiry contradicted the fold: a
+        repeat push keeps its original list position and restarts its clock, so
+        popping index 0 destroyed the line that had just been refreshed while an
+        older, already-read line stayed on screen.
         """
         while len(self._items) > self.max_visible:
-            self._items.pop(0)
+            soonest = min(range(len(self._items)), key=lambda i: self._items[i].expires)
+            self._items.pop(soonest)
 
     def tick(self) -> None:
         """Drop whatever has finished fading out."""
@@ -240,8 +243,24 @@ class NotificationCenter:
         return out
 
     def animating(self) -> bool:
-        """True while a repaint timer is still earning its keep."""
-        return any(not entry.settled for entry in self.rendered())
+        """True while a repaint timer is still earning its keep.
+
+        Includes the run-up to expiry, not just the fade-in. Without that the
+        timer stopped as soon as a notification had appeared, nothing was left
+        to drive the fade-out, and expiring items were never evicted at all --
+        ``tick`` is only reached from the animation timer, so a stale
+        notification stayed in the centre for the whole session and the next
+        push with the same key folded into it.
+        """
+        now = self._clock()
+        if any(not entry.settled for entry in self.rendered()):
+            return True
+        # An item that has already expired is not a reason to keep repainting:
+        # its fade-out is over, and the eviction that follows is a bookkeeping
+        # step that rebuild() performs on the ordinary tick.
+        return any(
+            now < item.expires <= now + self.fade_out for item in self._items
+        )
 
     @property
     def busy(self) -> bool:

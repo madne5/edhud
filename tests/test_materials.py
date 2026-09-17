@@ -160,11 +160,47 @@ class MaterialStateTests(unittest.TestCase):
         self.assertEqual(self.state.holdings["sulphur"], 4)
 
     def test_the_notification_matches_the_requested_shape(self) -> None:
+        self.state.apply({"event": "Materials", "Raw": [{"Name": "sulphur", "Count": 270}]})
         self.collected("sulphur", 1, localised="Сера")
         note = self.notes()[0]
         self.assertEqual(note.title, "+1 Сера (Редкость: 1)")
-        self.assertEqual(note.detail, "Всего: 1")
+        self.assertEqual(note.detail, "Всего: 271")
         self.assertEqual(note.glyph, "gem")
+
+    def test_no_total_is_shown_before_the_hold_is_known(self) -> None:
+        """The journal reports the whole hold only at session start.
+
+        After a history-less start the first pickup would otherwise announce
+        "Всего: 1" for a hold that is really hundreds, which is an invented
+        number rather than a measured one.
+        """
+        self.collected("sulphur", 1, localised="Сера")
+        note = self.notes()[0]
+        self.assertEqual(note.title, "+1 Сера (Редкость: 1)")
+        self.assertEqual(note.detail, "")
+
+    def test_notifications_are_keyed_by_material_not_by_total(self) -> None:
+        """Two materials with equal holdings must not merge into one line."""
+        self.state.apply(
+            {"event": "Materials", "Raw": [{"Name": "sulphur", "Count": 0},
+                                           {"Name": "carbon", "Count": 0}]}
+        )
+        self.collected("sulphur", 1, localised="Сера")
+        self.collected("carbon", 1, localised="Углерод")
+        keys = [note.key for note in self.notes()]
+        self.assertEqual(keys, ["sulphur", "carbon"])
+
+    def test_repeat_pickups_of_one_material_fold(self) -> None:
+        """The fold the notification centre advertises must actually happen."""
+        from elite_hud.notifications import NotificationCenter
+
+        self.state.apply({"event": "Materials", "Raw": [{"Name": "sulphur", "Count": 100}]})
+        self.collected("sulphur", 1, localised="Сера")
+        self.collected("sulphur", 1, localised="Сера")
+        centre = NotificationCenter(hold_seconds=5.0)
+        centre.drain(self.notes())
+        self.assertEqual(len(centre), 1)
+        self.assertEqual(centre.items[0].count, 2)
 
     def test_the_notification_reports_the_running_total(self) -> None:
         self.state.apply({"event": "Materials", "Raw": [{"Name": "sulphur", "Count": 270}]})
@@ -253,21 +289,55 @@ class MaterialStateTests(unittest.TestCase):
         self.assertEqual(self.state.holdings["sulphur"], 1)
 
     def test_a_trade_swaps_both_sides(self) -> None:
+        """The journal nests Material/Quantity here, not Name/Count.
+
+        The first version of this test used the invented keys on both the code
+        and the assertion, so it passed while every real trade was a silent
+        no-op. The payload below is the shape the game actually writes.
+        """
+        self.state.apply({"event": "Materials", "Raw": [{"Name": "iron", "Count": 24}]})
+        self.state.apply(
+            {
+                "event": "MaterialTrade",
+                "TraderType": "raw",
+                "Paid": {"Material": "iron", "Material_Localised": "Железо",
+                         "Category": "Raw", "Quantity": 18},
+                "Received": {"Material": "vanadium", "Material_Localised": "Ванадий",
+                             "Category": "Raw", "Quantity": 3},
+            }
+        )
+        self.assertEqual(self.state.holdings["iron"], 6)
+        self.assertEqual(self.state.holdings["vanadium"], 3)
+
+    def test_the_older_count_and_amount_spellings_still_work(self) -> None:
+        """Events vary; an unreadable trade would silently corrupt the hold."""
         self.collected("iron", 6)
         self.state.apply(
             {
                 "event": "MaterialTrade",
-                "Paid": {"Name": "iron", "Count": 6},
-                "Received": {"Name": "vanadium", "Amount": 2},
+                "Paid": {"Name": "iron", "Count": 2},
+                "Received": {"Name": "vanadium", "Amount": 5},
             }
         )
-        self.assertEqual(self.state.holdings["iron"], 0)
-        self.assertEqual(self.state.holdings["vanadium"], 2)
+        self.assertEqual(self.state.holdings["iron"], 4)
+        self.assertEqual(self.state.holdings["vanadium"], 5)
 
     def test_missing_amounts_are_ignored(self) -> None:
         self.collected("iron", 6)
-        self.state.apply({"event": "MaterialTrade", "Paid": {"Name": "iron"}})
+        self.state.apply({"event": "MaterialTrade", "Paid": {"Material": "iron"}})
         self.assertEqual(self.state.holdings["iron"], 6)
+
+    def test_a_traded_away_hold_is_reported_first(self) -> None:
+        """A trade may leave a material the commander had never collected."""
+        self.state.apply(
+            {
+                "event": "MaterialTrade",
+                "Paid": {"Material": "iron", "Quantity": 4},
+                "Received": {"Material": "vanadium", "Quantity": 1},
+            }
+        )
+        self.assertEqual(self.state.holdings["iron"], 0)
+        self.assertEqual(self.state.holdings["vanadium"], 1)
 
 
 if __name__ == "__main__":

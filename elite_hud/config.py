@@ -319,6 +319,24 @@ class Config:
     #: species name -> credit value, overrides for the bundled table
     exobiology_overrides: dict[str, int] = field(default_factory=dict)
 
+    @staticmethod
+    def _table(raw: dict, name: str) -> dict:
+        """A section, or an empty one when the file put something else there.
+
+        Every other kind of malformed config degrades with a log line. Writing
+        ``overlay = false``, which is valid TOML, used to raise AttributeError
+        out of ``load`` and stop the HUD from starting at all -- before logging
+        was even configured, so nothing recorded why.
+        """
+        value = raw.get(name)
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            log.warning("config section [%s] is %s, not a table; ignoring it",
+                        name, type(value).__name__)
+            return {}
+        return value
+
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
         config = cls()
@@ -330,21 +348,24 @@ class Config:
         except (OSError, tomllib.TOMLDecodeError) as exc:
             log.error("cannot read %s: %s -- using defaults", path, exc)
             return config
+        if not isinstance(raw, dict):  # pragma: no cover - tomllib always gives one
+            return config
 
-        _merge(config.journal, raw.get("journal"))
-        _merge(config.overlay, raw.get("overlay"))
-        _merge(config.overlay.labels, raw.get("overlay", {}).get("labels"))
-        _merge(config.alerts, raw.get("alerts"))
-        _merge(config.notifications, raw.get("notifications"))
-        _merge(config.footfall, raw.get("footfall"))
-        _merge(config.faction, raw.get("faction"))
-        _merge(config.materials, raw.get("materials"))
-        _merge(config.carrier, raw.get("carrier"))
-        _merge(config.commander, raw.get("commander"))
-        _merge(config.update, raw.get("update"))
-        _merge(config.logging, raw.get("logging"))
+        overlay = cls._table(raw, "overlay")
+        _merge(config.journal, cls._table(raw, "journal"))
+        _merge(config.overlay, overlay)
+        _merge(config.overlay.labels, cls._table(overlay, "labels"))
+        _merge(config.alerts, cls._table(raw, "alerts"))
+        _merge(config.notifications, cls._table(raw, "notifications"))
+        _merge(config.footfall, cls._table(raw, "footfall"))
+        _merge(config.faction, cls._table(raw, "faction"))
+        _merge(config.materials, cls._table(raw, "materials"))
+        _merge(config.carrier, cls._table(raw, "carrier"))
+        _merge(config.commander, cls._table(raw, "commander"))
+        _merge(config.update, cls._table(raw, "update"))
+        _merge(config.logging, cls._table(raw, "logging"))
 
-        overrides = raw.get("exobiology", {}).get("values")
+        overrides = cls._table(raw, "exobiology").get("values")
         if isinstance(overrides, dict):
             config.exobiology_overrides = {
                 str(k): int(v) for k, v in overrides.items() if isinstance(v, (int, float))
@@ -361,12 +382,14 @@ class Config:
         if overlay.position not in VALID_POSITIONS:
             log.warning("unknown overlay.position %r, using top-center", overlay.position)
             overlay.position = "top-center"
-        if not overlay.segments:
-            overlay.segments = ["carrier", "system", "fss", "bio"]
+        # An empty list is honoured rather than replaced. Unticking every block
+        # in the top row used to substitute a hardcoded list, so four blocks the
+        # commander had switched off kept drawing, and the config file recorded
+        # a state the menu had never shown.
         unknown = [s for s in overlay.segments if s not in VALID_SEGMENTS]
         if unknown:
             log.warning("dropping unknown overlay.segments %s", unknown)
-            overlay.segments = [s for s in overlay.segments if s in VALID_SEGMENTS] or ["system", "fss"]
+            overlay.segments = [s for s in overlay.segments if s in VALID_SEGMENTS]
 
         unknown_status = [s for s in overlay.status_segments if s not in VALID_STATUS_SEGMENTS]
         if unknown_status:
@@ -555,6 +578,63 @@ def set_update_mode(path: Path, mode: str) -> bool:
     return set_config_value(path, "update", "mode", mode)
 
 
+def _section_span(lines: list[str], section: str) -> tuple[str, int | None]:
+    """Where a section lives in a config file.
+
+    Returns ``(form, index)`` where form is ``"header"`` (declared as
+    ``[section]``), ``"dotted"`` (declared only through ``section.key = value``
+    lines) or ``"absent"``. ``index`` is the last line that belongs to the
+    section, or None when it has no lines of its own.
+
+    Both forms have to be told apart, because inserting a bare ``key = value``
+    into a dotted-declared table would put it at the top level instead.
+    """
+    header = f"[{section}]"
+    prefix = f"{section}."
+    header_index: int | None = None
+    dotted_index: int | None = None
+    body_index: int | None = None
+    inside = False
+    for index, raw in enumerate(lines):
+        stripped = raw.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            inside = stripped[1:-1].strip() == section
+            if inside and header_index is None:
+                header_index = index
+            continue
+        if inside:
+            body_index = index
+        elif stripped.split("=", 1)[0].strip().startswith(prefix):
+            dotted_index = index
+    if header_index is not None:
+        return "header", body_index if body_index is not None else header_index
+    if dotted_index is not None:
+        return "dotted", dotted_index
+    return "absent", None
+
+
+def _place_in_section(lines: list[str], section: str, key: str, value: Any) -> None:
+    """Put a key into its own section, creating or extending it as needed.
+
+    Appending to the end of the file instead put the key inside whichever table
+    happened to be last -- here that is ``[exobiology.values]`` -- so the value
+    was silently dropped while the caller was told the write had succeeded.
+    Declaring the section again when it already had a header is worse still:
+    TOML rejects a duplicate table, so from the next start onwards the whole
+    file failed to parse and every setting silently reverted to its default.
+    """
+    form, index = _section_span(lines, section)
+    if form == "header" and index is not None:
+        lines.insert(index + 1, f"{key} = {_toml_value(value)}")
+    elif form == "dotted" and index is not None:
+        # The table lives as dotted keys, so the new key has to be dotted too.
+        lines.insert(index + 1, f"{section}.{key} = {_toml_value(value)}")
+    else:
+        lines += ["", f"[{section}]", f"{key} = {_toml_value(value)}"]
+
+
 def set_config_value(path: Path, section: str, key: str, value: str) -> bool:
     """Set one key in one section, in place, keeping comments and layout.
 
@@ -575,28 +655,24 @@ def set_config_value(path: Path, section: str, key: str, value: str) -> bool:
     except OSError:
         return False
 
+    rendered = f"{key} = {_toml_value(str(value))}"
     current_section = ""
     inserted = False
-    found_section = False
     for index, raw in enumerate(lines):
-        stripped = raw.strip()
+        stripped = raw.split("#", 1)[0].strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             current_section = stripped[1:-1].strip()
-            if current_section == section:
-                found_section = True
             continue
-        if current_section != section or stripped.startswith("#"):
+        if current_section != section or not stripped:
             continue
         existing = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
         if existing == key:
-            lines[index] = f"{key} = {_toml_value(str(value))}"
+            lines[index] = rendered
             inserted = True
             break
 
     if not inserted:
-        if not found_section:
-            lines += ["", f"[{section}]"]
-        lines.append(f"{key} = {_toml_value(str(value))}")
+        _place_in_section(lines, section, key, str(value))
 
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -640,29 +716,23 @@ def set_config_list(path: Path, section: str, key: str, values: list[str]) -> bo
     except OSError:
         return False
 
-    rendered = _toml_value(list(values))
     current_section = ""
     inserted = False
-    found_section = False
     for index, raw in enumerate(lines):
-        stripped = raw.strip()
+        stripped = raw.split("#", 1)[0].strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             current_section = stripped[1:-1].strip()
-            if current_section == section:
-                found_section = True
             continue
-        if current_section != section or stripped.startswith("#"):
+        if current_section != section or not stripped:
             continue
         existing = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
         if existing == key:
-            lines[index] = f"{key} = {rendered}"
+            lines[index] = f"{key} = {_toml_value(list(values))}"
             inserted = True
             break
 
     if not inserted:
-        if not found_section:
-            lines += ["", f"[{section}]"]
-        lines.append(f"{key} = {rendered}")
+        _place_in_section(lines, section, key, list(values))
 
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -725,10 +795,40 @@ def resolve_config_path(explicit: "Path | None" = None) -> Path:
     return Path(__file__).resolve().parent.parent / CONFIG_FILENAME
 
 
-def _section_names(lines: list[str]) -> set[str]:
-    found: set[str] = set()
+def _section_names(lines: list[str], text: str = "") -> set[str]:
+    """Names of the tables a config file already declares.
+
+    Parsing is preferred over scanning for ``[header]`` lines, because a table
+    may also be declared with dotted keys (``overlay.monitor = "1"``) and a
+    header may carry a trailing comment. Both fooled the line scanner, which
+    then added a second declaration of a table the file already had: TOML
+    rejects that outright, so from the next start onwards ``Config.load`` was
+    returning every default and never recovered, because the repair path cannot
+    run on a file that will not parse.
+    """
+    if text:
+        try:
+            parsed = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            found: set[str] = set()
+
+            def walk(node: dict, prefix: str = "") -> None:
+                for name, value in node.items():
+                    path = f"{prefix}{name}"
+                    if isinstance(value, dict):
+                        found.add(path)
+                        walk(value, path + ".")
+
+            walk(parsed)
+            return found
+
+    # Fall back to scanning when the file does not parse, so a broken file can
+    # still be reported on rather than silently treated as empty.
+    found = set()
     for raw in lines:
-        stripped = raw.strip()
+        stripped = raw.split("#", 1)[0].strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             found.add(stripped[1:-1].strip())
     return found
@@ -753,7 +853,7 @@ def add_missing_sections(path: Path, config: "Config | None" = None) -> list[str
     except OSError:
         return []
 
-    existing = _section_names(lines)
+    existing = _section_names(lines, "\n".join(lines))
     canonical = (config or Config()).to_toml().splitlines()
 
     # Group the canonical output by section, keeping order.

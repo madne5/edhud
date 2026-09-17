@@ -318,3 +318,54 @@ class AnnouncementPipelineTests(unittest.TestCase):
         publisher = self._publisher(state)
         publisher._publish_announcements()
         self.assertEqual(publisher.hud.pushed, [])
+
+
+class EvictionAndTimerTests(unittest.TestCase):
+    """Two failures that only appear once time is involved."""
+
+    def setUp(self) -> None:
+        self.clock = Clock()
+        self.centre = NotificationCenter(
+            max_visible=2, hold_seconds=5.0, fade_in=0.2, fade_out=0.5, clock=self.clock
+        )
+
+    def _push(self, key: str, title: str = "T"):
+        self.centre.push(Notification(key=key, title=title))
+
+    def test_the_line_that_expires_first_gives_way(self) -> None:
+        """Evicting by position killed the line a fold had just refreshed."""
+        self._push("a")
+        self.clock.advance(4.0)
+        self._push("b")
+        self.clock.advance(0.1)
+        # Refreshing "a" extends its life past "b"'s, but leaves it first in
+        # the list.
+        self._push("a")
+        self.clock.advance(0.1)
+        self._push("c")
+        self.assertIn("a", [item.key for item in self.centre.items])
+        self.assertNotIn("b", [item.key for item in self.centre.items])
+
+    def test_the_timer_stays_on_through_the_fade_out(self) -> None:
+        """Otherwise nothing drives the fade, and the item is never evicted."""
+        self._push("a")
+        self.clock.advance(0.2)
+        self.assertFalse(self.centre.animating())
+        self.clock.advance(4.4)  # 4.6: inside the last fade_out before expiry
+        self.assertTrue(self.centre.animating())
+
+    def test_the_timer_stops_once_the_fade_is_over(self) -> None:
+        self._push("a")
+        self.clock.advance(5.6)
+        self.assertEqual(self.centre.rendered(), [])
+        self.assertFalse(self.centre.animating())
+
+    def test_an_expired_notification_is_not_folded_into(self) -> None:
+        """The symptom: a stale line absorbing a fresh event as 'x2'."""
+        self._push("a", "First")
+        self.clock.advance(60.0)
+        self.centre.tick()
+        self.assertEqual(len(self.centre), 0)
+        self._push("a", "Second")
+        self.assertEqual(self.centre.items[0].count, 1)
+        self.assertEqual(self.centre.items[0].title, "Second")

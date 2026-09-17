@@ -276,6 +276,9 @@ class Announcement:
     value: int = 0
     #: optional glyph name for the notification
     glyph: str = ""
+    #: optional folding identity, when ``detail`` is display text rather than
+    #: something that identifies the notification
+    key: str = ""
     #: override colour role: "accent" | "success" | "danger" | "foreground"
     tone: str = "accent"
     at: datetime = field(default_factory=utcnow)
@@ -762,16 +765,35 @@ class GameState:
         self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - count)
 
     def _on_MaterialTrade(self, event: dict) -> None:
-        """A trader swaps one material for another, at a rate."""
+        """A trader swaps one material for another, at a rate.
+
+        The nested objects use ``Material`` and ``Quantity``, not ``Name`` and
+        ``Count``: reading the latter made every trade a silent no-op, and the
+        holdings then stayed wrong for the rest of the session. An early test
+        asserted the invented keys on both sides, so it passed against the bug.
+        """
         paid = event.get("Paid")
         if isinstance(paid, dict):
             self._consume_material(paid)
         received = event.get("Received")
         if isinstance(received, dict):
-            symbol = self.material_table.normalise(str(received.get("Name") or ""))
-            amount = received.get("Amount")
-            if symbol and isinstance(amount, int):
+            symbol = self._material_symbol(received)
+            amount = self._material_amount(received)
+            if symbol and amount:
                 self.holdings[symbol] = self.holdings.get(symbol, 0) + amount
+
+    @staticmethod
+    def _material_symbol(entry: dict) -> str:
+        """The name field differs by event: Material, Name, or a localised one."""
+        return str(entry.get("Material") or entry.get("Name") or "")
+
+    @staticmethod
+    def _material_amount(entry: dict) -> int:
+        for key in ("Quantity", "Count", "Amount"):
+            value = entry.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        return 0
 
     def _on_Synthesis(self, event: dict) -> None:
         materials = event.get("Materials")
@@ -791,11 +813,10 @@ class GameState:
                         self._consume_material(raw)
 
     def _consume_material(self, entry: dict) -> None:
-        symbol = self.material_table.normalise(str(entry.get("Name") or ""))
+        symbol = self.material_table.normalise(self._material_symbol(entry))
         if not symbol:
             return
-        amount = entry.get("Count", entry.get("Amount"))
-        amount = int(amount) if isinstance(amount, int) else 0
+        amount = self._material_amount(entry)
         self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - amount)
 
     def _announce_material(self, symbol: str, count: int, localised: str) -> None:
@@ -806,12 +827,23 @@ class GameState:
         title = f"+{count} {name}"
         if self.material_rarity and rarity:
             title = f"{title} ({self.rarity_label}: {rarity})"
-        detail = f"{self.total_label}: {self.holdings.get(symbol, 0)}"
+        # Without a Materials event the hold is unknown, not empty: the journal
+        # only reports the whole hold at session start, so a pickup seen after a
+        # history-less start would otherwise announce "Всего: 1" for a hold of
+        # hundreds. The guard existed but nothing consulted it.
+        detail = ""
+        if self.materials_known:
+            detail = f"{self.total_label}: {self.holdings.get(symbol, 0)}"
         self.announcements.append(
             Announcement(
                 kind="material",
                 title=title,
                 detail=detail,
+                # Folded by material, not by the running total: keying on the
+                # total meant two different materials with the same count
+                # merged into one line claiming "x2", while repeated pickups of
+                # one material never folded at all.
+                key=symbol,
                 value=self.holdings.get(symbol, 0),
                 glyph="gem",
                 tone="accent",
@@ -953,6 +985,11 @@ class GameState:
         self._apply_factions(event)
 
     def _on_CarrierJump(self, event: dict) -> list[Alert] | None:
+        # A carrier ride lands the commander in a new system, so the faction
+        # standing has to be re-read here too. Without this the HUD kept showing
+        # the previous system's faction, influence and controlling colour until
+        # something else happened to refresh it.
+        self._apply_factions(event)
         # This event only exists when the commander was docked at the time, and
         # its timestamp is the arrival -- which is the jump's duration later than
         # the departure the cooldown is really measured from.
