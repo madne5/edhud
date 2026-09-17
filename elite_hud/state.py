@@ -280,6 +280,56 @@ class Announcement:
 
 
 @dataclass(slots=True)
+class JumpPlan:
+    """Where the commander is going next.
+
+    ``FSDTarget`` is the only routine source for this, and it is written when a
+    target is chosen in the galaxy map: it carries the system name, the star
+    class and how many jumps remain. A plotted ``NavRoute`` would be better --
+    it carries every leg with coordinates -- but the journals this was built
+    against contain 83 NavRoute events and not one of them has a single leg,
+    so that path is written and left untested against real data.
+    """
+
+    #: Target system name, empty when nothing is selected.
+    target: str = ""
+    star_class: str = ""
+    #: Jumps remaining when the target was set, counted down on arrival.
+    remaining: int = 0
+    #: Legs of a plotted route, outermost last; usually empty in practice.
+    route: list[str] = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return bool(self.target)
+
+    def arrive(self, system: str) -> None:
+        """Clear the plan when the commander reaches the system it named.
+
+        The name in ``FSDTarget`` is the *next waypoint*, not the final
+        destination: across the journals this was built against the name changes
+        on every hop while ``RemainingJumpsInRoute`` counts down 8, 7, 6, 5. The
+        game re-issues the event with the following waypoint as soon as the
+        route advances -- often while still in the previous system -- so
+        arriving at the named system means that leg is finished.
+
+        Clearing is therefore right, and decrementing would be wrong: it would
+        read "7 jumps" while the commander is sitting in the target. If there is
+        more route left, the next FSDTarget arrives immediately and restores the
+        plan with the game's own number.
+        """
+        if not self.target or system != self.target:
+            return
+        self.clear()
+
+    def clear(self) -> None:
+        self.target = ""
+        self.star_class = ""
+        self.remaining = 0
+        self.route.clear()
+
+
+@dataclass(slots=True)
 class Alert:
     """A user-visible notification raised by a journal event."""
 
@@ -343,6 +393,8 @@ class GameState:
         self.footfall = footfall or FootfallPolicy()
         #: Sampled or earned but not yet banked.
         self.unsold = UnsoldData()
+        #: Where the commander is heading next.
+        self.jump_plan = JumpPlan()
         #: Rarity and canonical names; the journal supplies localised names.
         self.material_table = material_table or MaterialTable()
         #: Journal symbol (lowercase) -> how many are held.
@@ -712,6 +764,33 @@ class GameState:
         self.system.address = address
         # Alerts are scoped per system; drop the previous system's history.
         self._alerted = {k: v for k, v in self._alerted.items() if k[0] == address}
+        # Arriving at the target consumes a leg of the plan.
+        self.jump_plan.arrive(name)
+
+    def _on_FSDTarget(self, event: dict) -> None:
+        name = str(event.get("Name") or "")
+        if not name:
+            return
+        remaining = event.get("RemainingJumpsInRoute")
+        self.jump_plan.target = name
+        self.jump_plan.star_class = str(event.get("StarClass") or "")
+        self.jump_plan.remaining = int(remaining) if isinstance(remaining, int) else 1
+
+    def _on_NavRoute(self, event: dict) -> None:
+        route = event.get("Route")
+        legs: list[str] = []
+        if isinstance(route, list):
+            for leg in route:
+                if isinstance(leg, dict) and leg.get("StarSystem"):
+                    legs.append(str(leg["StarSystem"]))
+        self.jump_plan.route = legs
+        if legs:
+            # A plotted route names its own destination and length, which beats
+            # FSDTarget's count, and it arrives after the target is set.
+            self.jump_plan.target = legs[-1]
+
+    def _on_NavRouteClear(self, event: dict) -> None:
+        self.jump_plan.route.clear()
 
     def _on_FSDJump(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))

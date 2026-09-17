@@ -61,9 +61,13 @@ class LabelConfig:
     footfall_first: str = "Первый след"
     #: unredeemed value: "в кармане 343.3M"
     unsold: str = "в кармане"
+    #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
+    jump_next: str = "след."
     #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
     rarity: str = "Редкость"
     total: str = "Всего"
+    #: plural noun for remaining jumps
+    jumps: str = "прыжка"
 
 
 @dataclass
@@ -100,7 +104,7 @@ class OverlayConfig:
     #: Segments shown in the bar, in order. Available: carrier, system, fss, bio.
     segments: list[str] = field(default_factory=lambda: ["carrier", "system", "fss", "bio"])
     #: Segments in the always-visible second row.
-    #: Available: mode, empire, federation, ship, missions, unsold.
+    #: Available: mode, empire, federation, ship, missions, unsold, next.
     status_segments: list[str] = field(
         default_factory=lambda: [
             "mode",
@@ -108,6 +112,7 @@ class OverlayConfig:
             "federation",
             "ship",
             "missions",
+            "next",
             "unsold",
         ]
     )
@@ -406,7 +411,15 @@ class Config:
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
 VALID_SEGMENTS = {"carrier", "system", "fss", "bio"}
-VALID_STATUS_SEGMENTS = {"mode", "empire", "federation", "ship", "missions", "unsold"}
+VALID_STATUS_SEGMENTS = {
+    "mode",
+    "empire",
+    "federation",
+    "ship",
+    "missions",
+    "unsold",
+    "next",
+}
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
 VALID_UPDATE_ASSETS = {"any", "installer", "portable"}

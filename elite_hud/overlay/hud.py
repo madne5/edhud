@@ -423,6 +423,8 @@ class HudWindow(QWidget):
                 segment = self._missions_segment(lead())
             elif name == "unsold":
                 segment = self._unsold_segment(lead())
+            elif name == "next":
+                segment = self._next_segment(lead())
             if segment is not None:
                 segments.append(segment)
         return segments
@@ -507,6 +509,30 @@ class HudWindow(QWidget):
                 Span(f"{held}/{capacity}", color=color, bold=True),
             ],
             glyph_color=color,
+            lead=lead,
+        )
+
+    def _next_segment(self, lead: float) -> Segment | None:
+        """Where the commander is heading: current system is already shown."""
+        plan = self.state.jump_plan
+        if not plan.active:
+            return None
+        cfg = self.config.overlay
+        spans = [Span(cfg.labels.jump_next + " ", color=cfg.foreground, dim=0.7)]
+        spans.append(Span(plan.target, color=cfg.accent, bold=True))
+        detail: list[str] = []
+        if plan.star_class:
+            detail.append(plan.star_class)
+        if plan.remaining > 1:
+            detail.append(f"{plan.remaining} {cfg.labels.jumps}")
+        if detail:
+            spans.append(
+                Span(f" ({', '.join(detail)})", color=cfg.foreground, dim=0.72)
+            )
+        return Segment(
+            glyph="compass" if cfg.show_glyphs else None,
+            spans=spans,
+            glyph_color=cfg.accent,
             lead=lead,
         )
 
