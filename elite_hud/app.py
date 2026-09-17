@@ -17,9 +17,13 @@ from . import __version__
 from .alerts import SoundPlayer
 from .config import (
     CONFIG_FILENAME,
+    SEGMENT_NAMES,
+    STATUS_SEGMENT_NAMES,
     Config,
     ensure_config_file,
     resolve_config_path,
+    set_config_list,
+    toggle_segment,
     set_config_value,
     set_update_mode,
 )
@@ -556,6 +560,8 @@ class HudApp:
         menu.addAction("Показать / скрыть HUD", self._toggle_hud)
         menu.addAction("Открыть config.toml", self._open_config)
         menu.addSeparator()
+        self._build_segment_menus(menu)
+        menu.addSeparator()
         self._build_monitor_menu(menu)
         menu.addSeparator()
         self._build_update_menu(menu, app)
@@ -565,6 +571,49 @@ class HudApp:
         tray.setContextMenu(menu)
         tray.show()
         self.tray = tray
+
+    def _build_segment_menus(self, menu) -> None:
+        """Tick blocks on and off without editing config.toml by hand.
+
+        Two submenus rather than one, because the two rows are independent: a
+        commander who is not working on Empire or Federation standing wants to
+        drop those two and keep the rest of the status row.
+        """
+        top = menu.addMenu("Верхняя строка")
+        self._add_segment_actions(top, "segments", SEGMENT_NAMES, self.config.overlay.segments)
+
+        status = menu.addMenu("Строка состояния")
+        self._add_segment_actions(
+            status, "status_segments", STATUS_SEGMENT_NAMES, self.config.overlay.status_segments
+        )
+
+    def _add_segment_actions(self, menu, key: str, names: dict, enabled: list) -> None:
+        for value, label in names.items():
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(value in enabled)
+            action.triggered.connect(
+                lambda checked=False, v=value, k=key, a=action: self._toggle_segment(k, v, checked, a)
+            )
+
+    def _toggle_segment(self, key: str, value: str, enabled: bool, action) -> None:
+        """Add or remove one segment, in the configured order."""
+        order = list(SEGMENT_NAMES if key == "segments" else STATUS_SEGMENT_NAMES)
+        current = toggle_segment(list(getattr(self.config.overlay, key)), order, value, enabled)
+        setattr(self.config.overlay, key, current)
+        self.config.validate()
+        persisted = set_config_list(
+            default_config_path(self.options.config), "overlay", key, list(getattr(self.config.overlay, key))
+        )
+
+        # validate() may have dropped something it does not recognise; reflect
+        # that back onto the checkbox so the menu cannot lie about the state.
+        action.setChecked(value in getattr(self.config.overlay, key))
+
+        if self.hud is not None:
+            self.hud.rebuild()
+        note = "" if persisted else " (не сохранилось в config.toml)"
+        log.info("overlay.%s = %s%s", key, getattr(self.config.overlay, key), note)
 
     def _build_monitor_menu(self, menu) -> None:
         """Let the user pick a display without editing the config by hand."""

@@ -19,6 +19,12 @@ from elite_hud.config import (
     set_config_value,
     set_update_mode,
     user_config_dir,
+    SEGMENT_NAMES,
+    STATUS_SEGMENT_NAMES,
+    VALID_SEGMENTS,
+    VALID_STATUS_SEGMENTS,
+    set_config_list,
+    toggle_segment,
 )
 
 
@@ -291,3 +297,108 @@ class EnsureConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SegmentTests(unittest.TestCase):
+    """Hiding blocks: the vocabulary, and the order they come back in."""
+
+    def test_every_segment_has_a_human_name(self) -> None:
+        """A new segment with no entry would be invisible in the tray menu."""
+        self.assertEqual(VALID_SEGMENTS - set(SEGMENT_NAMES), set())
+        self.assertEqual(VALID_STATUS_SEGMENTS - set(STATUS_SEGMENT_NAMES), set())
+
+    def test_the_name_tables_have_no_stale_entries(self) -> None:
+        self.assertEqual(set(SEGMENT_NAMES) - VALID_SEGMENTS, set())
+        self.assertEqual(set(STATUS_SEGMENT_NAMES) - VALID_STATUS_SEGMENTS, set())
+
+    def test_turning_one_off_removes_it(self) -> None:
+        order = list(SEGMENT_NAMES)
+        self.assertEqual(
+            toggle_segment(["carrier", "system", "fss"], order, "system", False),
+            ["carrier", "fss"],
+        )
+
+    def test_turning_one_back_on_restores_the_menu_order(self) -> None:
+        """Appending would silently rearrange the bar when a block returns."""
+        order = list(SEGMENT_NAMES)
+        self.assertEqual(
+            toggle_segment(["carrier", "system", "bio"], order, "fss", True),
+            ["carrier", "system", "fss", "bio"],
+        )
+
+    def test_turning_on_something_already_on_does_not_duplicate_it(self) -> None:
+        order = list(SEGMENT_NAMES)
+        self.assertEqual(
+            toggle_segment(["carrier", "fss"], order, "fss", True), ["carrier", "fss"]
+        )
+
+    def test_turning_off_something_absent_is_harmless(self) -> None:
+        order = list(SEGMENT_NAMES)
+        self.assertEqual(toggle_segment(["carrier"], order, "fss", False), ["carrier"])
+
+    def test_an_unknown_segment_is_kept(self) -> None:
+        """A config from a newer version must not lose its blocks to an older one."""
+        order = list(SEGMENT_NAMES)
+        result = toggle_segment(["carrier", "somethingNew"], order, "fss", True)
+        self.assertIn("somethingNew", result)
+        self.assertIn("carrier", result)
+        self.assertIn("fss", result)
+
+    def test_turning_everything_off_leaves_nothing(self) -> None:
+        order = list(STATUS_SEGMENT_NAMES)
+        current = list(order)
+        for name in order:
+            current = toggle_segment(current, order, name, False)
+        self.assertEqual(current, [])
+
+
+class ConfigListTests(unittest.TestCase):
+    """Persisting a list without destroying the file's comments."""
+
+    def _config(self, text: str) -> Path:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_replaces_an_existing_list(self) -> None:
+        path = self._config('[overlay]\nsegments = ["carrier", "bio"]\n')
+        self.assertTrue(
+            set_config_list(path, "overlay", "segments", ["carrier", "system"])
+        )
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.overlay.segments, ["carrier", "system"])
+
+    def test_keeps_comments_and_other_keys(self) -> None:
+        path = self._config(
+            "# my notes\n[overlay]\n# which blocks\nsegments = [\"carrier\"]\nfont_size = 15\n"
+        )
+        set_config_list(path, "overlay", "segments", ["system"])
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("# my notes", text)
+        self.assertIn("# which blocks", text)
+        self.assertIn("font_size = 15", text)
+        self.assertEqual(Config.load(path).overlay.segments, ["system"])
+
+    def test_adds_the_key_when_missing(self) -> None:
+        path = self._config("[overlay]\nfont_size = 15\n")
+        set_config_list(path, "overlay", "status_segments", ["mode"])
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.overlay.status_segments, ["mode"])
+        self.assertEqual(reloaded.overlay.font_size, 15)
+
+    def test_adds_the_section_when_missing(self) -> None:
+        path = self._config("[journal]\n")
+        set_config_list(path, "overlay", "segments", ["bio"])
+        self.assertEqual(Config.load(path).overlay.segments, ["bio"])
+
+    def test_writes_a_real_list_not_a_quoted_string(self) -> None:
+        """The bug this function exists to avoid."""
+        path = self._config("[overlay]\n")
+        set_config_list(path, "overlay", "segments", ["bio", "fss"])
+        self.assertIn('segments = ["bio", "fss"]', path.read_text(encoding="utf-8"))
+        self.assertEqual(Config.load(path).overlay.segments, ["bio", "fss"])
+
+    def test_a_missing_file_is_reported_not_created(self) -> None:
+        self.assertFalse(
+            set_config_list(Path("/nonexistent/config.toml"), "overlay", "segments", ["bio"])
+        )

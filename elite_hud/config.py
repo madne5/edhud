@@ -446,6 +446,27 @@ class Config:
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
 VALID_SEGMENTS = {"carrier", "system", "fss", "bio", "balance"}
+
+#: Human names for the segments, in the order they appear in a row. Used by the
+#: tray menu so blocks can be hidden without editing the config by hand.
+SEGMENT_NAMES: dict[str, str] = {
+    "carrier": "Флотоносец",
+    "system": "Система",
+    "balance": "Баланс",
+    "fss": "FSS",
+    "bio": "Биология",
+}
+STATUS_SEGMENT_NAMES: dict[str, str] = {
+    "mode": "Режим игры",
+    "empire": "Империя",
+    "federation": "Федерация",
+    "ship": "Корабль",
+    "missions": "Миссии",
+    "next": "Цель прыжка",
+    "faction": "Фракция",
+    "unsold": "К зачислению",
+}
+
 VALID_STATUS_SEGMENTS = {
     "mode",
     "empire",
@@ -548,6 +569,72 @@ def set_config_value(path: Path, section: str, key: str, value: str) -> bool:
         if not found_section:
             lines += ["", f"[{section}]"]
         lines.append(f'{key} = "{value}"')
+
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("cannot persist %s.%s: %s", section, key, exc)
+        return False
+    return True
+
+
+def toggle_segment(
+    current: list[str], order: list[str], value: str, enabled: bool
+) -> list[str]:
+    """Add or remove one segment, keeping the row in menu order.
+
+    Append would put a re-enabled block at the end of the row, which reads as a
+    different bar than the menu describes, so the result is always ordered by the
+    menu's own vocabulary. Names the vocabulary does not know about are kept --
+    a config written by a newer version should not lose its blocks to an older
+    one -- and they go first, ahead of the ordered ones.
+    """
+    names = [name for name in current if name != value]
+    if enabled:
+        names.append(value)
+    allowed = set(order)
+    ordered = [name for name in order if name in set(names)]
+    return [name for name in names if name not in allowed] + ordered
+
+
+def set_config_list(path: Path, section: str, key: str, values: list[str]) -> bool:
+    """Set one list-valued key in one section, in place.
+
+    Kept separate from :func:`set_config_value` because that one quotes whatever
+    it is given, which would turn a list into the string ``"[a, b]"``. Lists are
+    written on a single line by ``to_toml``, so replacing the line is enough.
+    Returns False when the file is missing or the edit could not be written.
+    """
+    if not path.is_file():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+    rendered = _toml_value(list(values))
+    current_section = ""
+    inserted = False
+    found_section = False
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1].strip()
+            if current_section == section:
+                found_section = True
+            continue
+        if current_section != section or stripped.startswith("#"):
+            continue
+        existing = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        if existing == key:
+            lines[index] = f"{key} = {rendered}"
+            inserted = True
+            break
+
+    if not inserted:
+        if not found_section:
+            lines += ["", f"[{section}]"]
+        lines.append(f"{key} = {rendered}")
 
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
