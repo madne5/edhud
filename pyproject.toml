@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "elite-hud"
-version = "0.7.2"
+version = "0.8.0"
 description = "Elite Dangerous journal HUD overlay: fleet carrier jumps, FSS progress and exobiology alerts"
 readme = "README.md"
 requires-python = ">=3.11"
