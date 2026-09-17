@@ -1179,3 +1179,126 @@ class PreviewFixtureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class FactionSegmentTests(unittest.TestCase):
+    """The followed faction: green where it runs the system, red where it does not."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, state, config):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    def _state(self, name="Traders & Explorers"):
+        from elite_hud.state import GameState
+
+        config = Config()
+        state = GameState(
+            ExobiologyTable(),
+            value_threshold=config.alerts.min_value,
+            faction_name=name,
+        )
+        return state
+
+    def _faction_row(self, hud):
+        return next(
+            (
+                row
+                for row in hud._rows
+                if row.kind == "status"
+                and any(
+                    span.text.startswith("Traders")
+                    for segment in row.segments
+                    for span in segment.spans
+                )
+            ),
+            None,
+        )
+
+    def _jump(self, state, influence, controller, system="Sol"):
+        state.apply(
+            {
+                "event": "FSDJump",
+                "StarSystem": system,
+                "SystemAddress": 1,
+                "Population": 1000,
+                "SystemFaction": {"Name": controller},
+                "Factions": [
+                    {"Name": "Traders & Explorers Inc.", "Influence": influence}
+                ],
+            }
+        )
+
+    def test_nothing_is_shown_without_a_configured_faction(self) -> None:
+        config = Config()
+        state = self._state(name="")
+        self._jump(state, 0.8, "Traders & Explorers Inc.")
+        hud = self._hud(state, config)
+        self.assertNotIn("Traders", hud.bar_text())
+        hud.close()
+
+    def test_nothing_is_shown_before_a_system_with_factions(self) -> None:
+        config = Config()
+        hud = self._hud(self._state(), config)
+        self.assertNotIn("Traders", hud.bar_text())
+        hud.close()
+
+    def test_controlling_faction_is_green(self) -> None:
+        config = Config()
+        state = self._state()
+        self._jump(state, 0.80981, "Traders & Explorers Inc.")
+        hud = self._hud(state, config)
+        row = self._faction_row(hud)
+        self.assertIsNotNone(row, "the faction should be on the status row")
+        segment = next(
+            segment
+            for segment in row.segments
+            if any(span.text.startswith("Traders") for span in segment.spans)
+        )
+        self.assertEqual(segment.glyph_color, config.overlay.success)
+        text = " ".join(span.text for span in segment.spans)
+        self.assertIn("81%", text)
+        hud.close()
+
+    def test_a_non_controlling_faction_is_red(self) -> None:
+        config = Config()
+        state = self._state()
+        self._jump(state, 0.303, "Someone Else")
+        hud = self._hud(state, config)
+        row = self._faction_row(hud)
+        self.assertIsNotNone(row)
+        segment = next(
+            segment
+            for segment in row.segments
+            if any(span.text.startswith("Traders") for span in segment.spans)
+        )
+        self.assertEqual(segment.glyph_color, config.overlay.danger)
+        self.assertIn("30%", " ".join(span.text for span in segment.spans))
+        hud.close()
+
+    def test_an_uninhabited_system_hides_it_again(self) -> None:
+        config = Config()
+        state = self._state()
+        self._jump(state, 0.80981, "Traders & Explorers Inc.")
+        state.apply(
+            {
+                "event": "FSDJump",
+                "StarSystem": "Blu Theia AV-F d11-1",
+                "SystemAddress": 2,
+                "Population": 0,
+                "Factions": [],
+            }
+        )
+        hud = self._hud(state, config)
+        self.assertNotIn("Traders", hud.bar_text())
+        hud.close()

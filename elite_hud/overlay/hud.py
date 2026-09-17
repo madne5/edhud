@@ -418,6 +418,8 @@ class HudWindow(QWidget):
                 segment = self._unsold_segment(0.0)
             elif name == "next":
                 segment = self._next_segment(0.0)
+            elif name == "faction":
+                segment = self._faction_segment(0.0)
             if segment is not None:
                 segments.append(segment)
         return self._apply_leads(segments, style.metrics.height() * 0.95)
@@ -502,6 +504,28 @@ class HudWindow(QWidget):
                 Span(f"{held}/{capacity}", color=color, bold=True),
             ],
             glyph_color=color,
+            lead=lead,
+        )
+
+    def _faction_segment(self, lead: float) -> Segment | None:
+        """The followed faction's standing here: green where it runs the place.
+
+        Hidden for an uninhabited system rather than left showing the previous
+        system's figure, and hidden when no faction is configured.
+        """
+        status = self.state.faction
+        if not status.wanted or not status.found:
+            return None
+        cfg = self.config.overlay
+        colour = cfg.success if status.controlling else cfg.danger
+        return Segment(
+            # Same glyph either way; the colour carries the answer.
+            glyph="scales" if cfg.show_glyphs else None,
+            spans=[
+                Span(status.matched or status.wanted, color=colour, bold=True),
+                Span(f" {status.percent}%", color=cfg.foreground, dim=0.75),
+            ],
+            glyph_color=colour,
             lead=lead,
         )
 

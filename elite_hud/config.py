@@ -65,6 +65,8 @@ class LabelConfig:
     unsold_samples: str = "проб"
     #: credit balance in the top row
     balance: str = "баланс"
+    #: faction influence in the current system: "Traders & Explorers Inc. 30%"
+    influence: str = "влияние"
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
     #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
@@ -110,7 +112,7 @@ class OverlayConfig:
         default_factory=lambda: ["carrier", "system", "balance", "fss", "bio"]
     )
     #: Segments in the always-visible second row.
-    #: Available: mode, empire, federation, ship, missions, unsold, next.
+    #: Available: mode, empire, federation, ship, missions, unsold, next, faction.
     status_segments: list[str] = field(
         default_factory=lambda: [
             "mode",
@@ -119,6 +121,7 @@ class OverlayConfig:
             "ship",
             "missions",
             "next",
+            "faction",
             "unsold",
         ]
     )
@@ -160,6 +163,22 @@ class MaterialsConfig:
     notify_collected: bool = True
     #: Mention rarity in the notification.
     rarity: bool = True
+
+
+@dataclass
+class FactionConfig:
+    """A faction to watch from system to system.
+
+    The name is matched loosely by default, because the name a commander uses
+    for a faction is rarely the full one the game reports: asking to follow
+    "Traders & Explorers" has to find "Traders & Explorers Inc.", which is what
+    the journals actually contain.
+    """
+
+    #: Faction to follow. Empty means the segment is not shown at all.
+    name: str = ""
+    #: "contains" (default) or "exact", case-insensitive either way.
+    match: str = "contains"
 
 
 @dataclass
@@ -273,6 +292,7 @@ class Config:
     alerts: AlertConfig = field(default_factory=AlertConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     footfall: FootfallConfig = field(default_factory=FootfallConfig)
+    faction: FactionConfig = field(default_factory=FactionConfig)
     materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
@@ -299,6 +319,7 @@ class Config:
         _merge(config.alerts, raw.get("alerts"))
         _merge(config.notifications, raw.get("notifications"))
         _merge(config.footfall, raw.get("footfall"))
+        _merge(config.faction, raw.get("faction"))
         _merge(config.materials, raw.get("materials"))
         _merge(config.carrier, raw.get("carrier"))
         _merge(config.commander, raw.get("commander"))
@@ -345,6 +366,13 @@ class Config:
             )
             alerts.sound_min_confidence = "guaranteed"
 
+        if self.faction.match not in ("contains", "exact"):
+            log.warning(
+                "unknown faction.match %r, using 'contains'", self.faction.match
+            )
+            self.faction.match = "contains"
+        self.faction.name = str(self.faction.name or "").strip()
+
         notifications = self.notifications
         notifications.max_visible = max(1, int(notifications.max_visible))
         notifications.hold_seconds = max(0.0, float(notifications.hold_seconds))
@@ -388,6 +416,7 @@ class Config:
             ("alerts", self.alerts),
             ("notifications", self.notifications),
             ("footfall", self.footfall),
+            ("faction", self.faction),
             ("materials", self.materials),
             ("carrier", self.carrier),
             ("commander", self.commander),
@@ -425,6 +454,7 @@ VALID_STATUS_SEGMENTS = {
     "missions",
     "unsold",
     "next",
+    "faction",
 }
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}

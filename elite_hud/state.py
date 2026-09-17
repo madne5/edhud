@@ -280,6 +280,60 @@ class Announcement:
 
 
 @dataclass(slots=True)
+class FactionStatus:
+    """What the current system says about a faction we are following.
+
+    The journal only carries a faction list for systems that have a population:
+    across the journals this was built against, all 92 jump events without a
+    faction list were systems with no population at all. So an empty list is not
+    "no data yet", it is "nobody lives here", and the HUD hides the segment
+    rather than showing a stale one from the previous system.
+    """
+
+    #: The name we were asked to follow, as configured.
+    wanted: str = ""
+    #: The system's own name for it, once matched.
+    matched: str = ""
+    found: bool = False
+    controlling: bool = False
+    #: 0.0-1.0 as the journal reports it.
+    influence: float = 0.0
+    #: Standing with that faction, if the journal carries it.
+    reputation: float | None = None
+    #: FactionState, e.g. "None", "Boom".
+    state: str = ""
+    system: str = ""
+    #: The current system has factions at all.
+    inhabited: bool = False
+
+    @property
+    def percent(self) -> int:
+        return int(round(self.influence * 100))
+
+    def matches(self, name: str, mode: str = "contains") -> bool:
+        """Whether a journal faction name is the one we are following."""
+        wanted = (self.wanted or "").strip().casefold()
+        if not wanted:
+            return False
+        candidate = (name or "").strip().casefold()
+        if not candidate:
+            return False
+        if mode == "exact":
+            return candidate == wanted
+        return wanted in candidate
+
+    def clear(self) -> None:
+        self.matched = ""
+        self.found = False
+        self.controlling = False
+        self.influence = 0.0
+        self.reputation = None
+        self.state = ""
+        self.system = ""
+        self.inhabited = False
+
+
+@dataclass(slots=True)
 class JumpPlan:
     """Where the commander is going next.
 
@@ -383,6 +437,8 @@ class GameState:
         footfall_label: str = "Первый след",
         material_table: MaterialTable | None = None,
         material_rarity: bool = True,
+        faction_name: str = "",
+        faction_match: str = "contains",
         material_enabled: bool = True,
         material_notify: bool = True,
         rarity_label: str = "Редкость",
@@ -395,6 +451,9 @@ class GameState:
         self.unsold = UnsoldData()
         #: Where the commander is heading next.
         self.jump_plan = JumpPlan()
+        #: The faction we are following, in the current system.
+        self.faction = FactionStatus(wanted=faction_name)
+        self.faction_match = faction_match
         #: Live values that only Status.json reports.
         self.legal_state = ""
         #: True while the status file is the source of the balance.
@@ -500,6 +559,46 @@ class GameState:
     def settle(self, now: datetime | None = None) -> None:
         """Advance state that depends on the clock; call from the UI loop."""
         self.carrier.settle(now)
+
+    # -- factions ----------------------------------------------------------
+
+    def _apply_factions(self, event: dict) -> None:
+        """Record the followed faction's standing in the system just entered."""
+        status = self.faction
+        status.clear()
+        status.wanted = self.faction.wanted
+        status.system = str(event.get("StarSystem") or "")
+        if not status.wanted:
+            return
+
+        factions = event.get("Factions")
+        if not isinstance(factions, list) or not factions:
+            # No list means an uninhabited system, not missing data.
+            return
+        status.inhabited = True
+
+        controller = ""
+        system_faction = event.get("SystemFaction")
+        if isinstance(system_faction, dict):
+            controller = str(system_faction.get("Name") or "")
+
+        for raw in factions:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("Name") or "")
+            if not status.matches(name, self.faction_match):
+                continue
+            status.matched = name
+            status.found = True
+            status.controlling = bool(controller) and name == controller
+            influence = raw.get("Influence")
+            if isinstance(influence, (int, float)) and not isinstance(influence, bool):
+                status.influence = float(influence)
+            reputation = raw.get("MyReputation")
+            if isinstance(reputation, (int, float)) and not isinstance(reputation, bool):
+                status.reputation = float(reputation)
+            status.state = str(raw.get("FactionState") or "")
+            break
 
     # -- status file -------------------------------------------------------
 
@@ -817,6 +916,7 @@ class GameState:
 
     def _on_FSDJump(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
+        self._apply_factions(event)
         level = event.get("FuelLevel")
         if isinstance(level, (int, float)):
             self.fuel_level = float(level)
@@ -824,6 +924,7 @@ class GameState:
 
     def _on_Location(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
+        self._apply_factions(event)
 
     def _on_CarrierJump(self, event: dict) -> list[Alert] | None:
         # This event only exists when the commander was docked at the time, and

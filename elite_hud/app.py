@@ -269,6 +269,8 @@ class HudApp:
                 min_bio_signals=config.footfall.min_bio_signals,
             ),
             footfall_label=config.overlay.labels.footfall_first,
+            faction_name=config.faction.name,
+            faction_match=config.faction.match,
             material_rarity=config.materials.rarity,
             material_enabled=config.materials.enabled,
             material_notify=config.materials.notify_collected,
