@@ -20,6 +20,7 @@ from .config import (
     SEGMENT_NAMES,
     STATUS_SEGMENT_NAMES,
     Config,
+    add_missing_sections,
     ensure_config_file,
     resolve_config_path,
     set_config_list,
@@ -305,6 +306,7 @@ class HudApp:
             on_before_apply=self._release_instance_guard,
         )
         self._update_actions: dict[str, object] = {}
+        self._faction_actions: dict[str, object] = {}
         self._monitor_group = None
         self._update_mode_group = None
         self._quit_after_update = False
@@ -560,6 +562,7 @@ class HudApp:
         menu.addAction("Показать / скрыть HUD", self._toggle_hud)
         menu.addAction("Открыть config.toml", self._open_config)
         menu.addSeparator()
+        self._build_faction_menu(menu)
         self._build_segment_menus(menu)
         menu.addSeparator()
         self._build_monitor_menu(menu)
@@ -571,6 +574,44 @@ class HudApp:
         tray.setContextMenu(menu)
         tray.show()
         self.tray = tray
+
+    def _build_faction_menu(self, menu) -> None:
+        """Ask for a faction to follow, rather than making anyone edit a file."""
+        submenu = menu.addMenu("Фракция")
+        current = self.config.faction.name
+        label = current or "не выбрана"
+        self._faction_actions["status"] = submenu.addAction(f"Отслеживается: {label}")
+        self._faction_actions["status"].setEnabled(False)
+        submenu.addAction("Задать фракцию…", self._prompt_faction)
+        if current:
+            submenu.addAction("Не отслеживать", lambda: self._set_faction(""))
+
+    def _prompt_faction(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        name, accepted = QInputDialog.getText(
+            None,
+            "elite-hud",
+            "Название фракции (совпадение нестрогое):",
+            text=self.config.faction.name,
+        )
+        if accepted:
+            self._set_faction(str(name).strip())
+
+    def _set_faction(self, name: str) -> None:
+        self.config.faction.name = name
+        self.config.validate()
+        path = default_config_path(self.options.config)
+        persisted = set_config_value(path, "faction", "name", name)
+        action = self._faction_actions.get("status")
+        if action is not None:
+            action.setText(f"Отслеживается: {name or 'не выбрана'}")
+        if self.hud is not None:
+            self.hud.rebuild()
+        note = "" if persisted else " (не сохранилось в config.toml)"
+        log.info("following faction %r%s", name, note)
+        if self.tray is not None and name:
+            self.tray.showMessage("elite-hud", f"Следим за фракцией: {name}{note}")
 
     def _build_segment_menus(self, menu) -> None:
         """Tick blocks on and off without editing config.toml by hand.
@@ -872,6 +913,13 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(config, options.verbose)
     if created:
         log.info("wrote default config to %s", config_path)
+    elif not options.list_genera:
+        # A config file is written once and then left alone, so settings added
+        # by a newer version would otherwise be invisible: the commander opens
+        # the file to set the new option and finds nothing to set.
+        added = add_missing_sections(config_path, config)
+        if added:
+            log.info("config.toml gained sections: %s", ", ".join(added))
 
     if options.make_config:
         print(f"config: {config_path}")

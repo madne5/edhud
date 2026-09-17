@@ -719,6 +719,78 @@ def resolve_config_path(explicit: "Path | None" = None) -> Path:
     return Path(__file__).resolve().parent.parent / CONFIG_FILENAME
 
 
+def _section_names(lines: list[str]) -> set[str]:
+    found: set[str] = set()
+    for raw in lines:
+        stripped = raw.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            found.add(stripped[1:-1].strip())
+    return found
+
+
+def add_missing_sections(path: Path, config: "Config | None" = None) -> list[str]:
+    """Append sections the running version has but the file predates.
+
+    A config file is written once and then left alone, so a version that adds a
+    section leaves every existing file without it -- a commander opening the
+    file to set the new option finds nothing to set. Only whole *sections* are
+    added here, never individual keys: the file's own header promises that
+    deleting a line falls back to the default, and re-adding keys would make
+    that a lie.
+
+    Comments and existing values are preserved. Returns the section names added.
+    """
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    existing = _section_names(lines)
+    canonical = (config or Config()).to_toml().splitlines()
+
+    # Group the canonical output by section, keeping order.
+    order: list[str] = []
+    bodies: dict[str, list[str]] = {}
+    current = ""
+    for line in canonical:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1].strip()
+            if current not in bodies:
+                bodies[current] = []
+                order.append(current)
+            continue
+        if current:
+            bodies[current].append(line)
+
+    # The label table is deliberately never written out. Labels are how
+    # localisation will work, and a file holding a full set of one language's
+    # wording would override the chosen language forever after.
+    skip = {"overlay.labels"}
+
+    added: list[str] = []
+    for name in order:
+        if name in existing or name in skip:
+            continue
+        lines.append("")
+        lines.append(f"# added by a newer version of elite-hud")
+        lines.append(f"[{name}]")
+        lines.extend(bodies[name])
+        added.append(name)
+
+    if not added:
+        return []
+    try:
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("cannot add sections to %s: %s", path, exc)
+        return []
+    log.info("added config sections: %s", ", ".join(added))
+    return added
+
+
 def ensure_config_file(path: Path) -> bool:
     """Write a commented default config if none exists.
 

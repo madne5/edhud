@@ -13,6 +13,7 @@ from pathlib import Path
 
 from elite_hud.config import (
     Config,
+    add_missing_sections,
     ensure_config_file,
     is_writable_dir,
     resolve_config_path,
@@ -402,3 +403,64 @@ class ConfigListTests(unittest.TestCase):
         self.assertFalse(
             set_config_list(Path("/nonexistent/config.toml"), "overlay", "segments", ["bio"])
         )
+
+
+class MissingSectionTests(unittest.TestCase):
+    """A config written once never gains settings from later versions."""
+
+    def _file(self, text: str) -> Path:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_new_section_is_added(self) -> None:
+        """Otherwise the commander looks for the setting and finds nothing."""
+        path = self._file("[journal]\npath = ''\n")
+        self.assertIn("faction", add_missing_sections(path))
+        self.assertEqual(Config.load(path).faction.name, "")
+
+    def test_existing_values_and_comments_survive(self) -> None:
+        path = self._file('# keep me\n[journal]\npath = "D:/ED"\n')
+        add_missing_sections(path)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("# keep me", text)
+        self.assertIn('path = "D:/ED"', text)
+        self.assertEqual(Config.load(path).journal.path, "D:/ED")
+
+    def test_the_label_table_is_never_written_out(self) -> None:
+        """A file holding one language's wording would freeze that language,
+        which is exactly what the localisation setting must be free to change."""
+        path = self._file("[journal]\n")
+        added = add_missing_sections(path)
+        self.assertNotIn("overlay.labels", added)
+        self.assertNotIn("[overlay.labels]", path.read_text(encoding="utf-8"))
+
+    def test_it_is_idempotent(self) -> None:
+        path = self._file("[journal]\n")
+        add_missing_sections(path)
+        self.assertEqual(add_missing_sections(path), [])
+
+    def test_a_second_run_does_not_duplicate_a_section(self) -> None:
+        path = self._file("[journal]\n")
+        add_missing_sections(path)
+        add_missing_sections(path)
+        text = path.read_text(encoding="utf-8")
+        self.assertEqual(text.count("[faction]"), 1)
+
+    def test_a_missing_file_is_left_alone(self) -> None:
+        self.assertEqual(add_missing_sections(Path("/nonexistent/config.toml")), [])
+
+    def test_deleted_keys_inside_an_existing_section_are_not_restored(self) -> None:
+        """The file promises that deleting a line falls back to the default."""
+        path = self._file("[overlay]\nfont_size = 15\n")
+        add_missing_sections(path)
+        text = path.read_text(encoding="utf-8")
+        self.assertNotIn("superpower_progress", text)
+        self.assertEqual(Config.load(path).overlay.font_size, 15)
+
+    def test_the_result_still_loads(self) -> None:
+        path = self._file("[overlay]\nsegments = [\"system\"]\n")
+        add_missing_sections(path)
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.overlay.segments, ["system"])
+        self.assertEqual(reloaded.faction.match, "contains")
