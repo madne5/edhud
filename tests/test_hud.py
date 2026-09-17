@@ -697,6 +697,21 @@ class StatusRowTests(unittest.TestCase):
         self.assertIn("макс: 84 ly", text)
         self.assertIn("тек: 84 ly", text)
 
+    def test_loading_cargo_lowers_the_current_range(self) -> None:
+        """The point of showing two numbers at all."""
+        config = Config()
+        state = self._state(config)
+        state.unladen_mass = 1000.0
+        state.fuel_capacity = 32.0
+        state.fuel_level = 32.0
+        state._recompute_jump_range()  # noqa: SLF001
+        empty = state.current_jump_range
+
+        state.cargo_count = 64
+        state._recompute_jump_range()  # noqa: SLF001
+        self.assertLess(state.current_jump_range, empty)
+        self.assertAlmostEqual(state.current_jump_range, empty * 1032 / 1096, places=1)
+
     def test_swapping_ships_does_not_leave_the_old_range_behind(self) -> None:
         """A current range above the maximum is nonsense on screen."""
         config = Config()

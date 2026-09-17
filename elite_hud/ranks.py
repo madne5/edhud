@@ -4,8 +4,13 @@ The journal reports ranks as bare indexes (``Rank.Combat: 3``) and progress to
 the next step as a percentage (``Progress.Combat: 96``). Neither carries a name,
 so both tables live here.
 
-Combat, Trade and Explore gained Elite I-V in Odyssey, which took them from
-nine steps to fourteen. The other ladders stop where they always did.
+Odyssey added Elite I-V to all six pilot ladders, taking them from nine steps
+to fourteen; CQC included, despite the widespread belief that it stops at Elite.
+Empire and Federation were always fifteen steps, ending at King and Admiral.
+
+``Progress`` is NOT a way to detect a topped-out ladder: a commander can sit at
+100 percent on rank 0 of a superpower while waiting for a promotion mission. The
+index has to be compared against :data:`MAX_RANKS`.
 """
 
 from __future__ import annotations
@@ -14,6 +19,13 @@ from dataclasses import dataclass
 
 #: Journal field name for each track.
 TRACKS = ("Combat", "Trade", "Explore", "Soldier", "Exobiologist", "Empire", "Federation", "CQC")
+
+#: Where each ladder ends. Verified against the journal indexes and the rank
+#: tables EDDI and FDevIDs carry: the six pilot ladders run to Elite V (13) and
+#: the two superpower ones to King and Admiral (14).
+MAX_RANKS = {track: 13 for track in TRACKS}
+MAX_RANKS["Empire"] = 14
+MAX_RANKS["Federation"] = 14
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +40,7 @@ class Ladder:
 
     @property
     def max_rank(self) -> int:
-        return len(self.names) - 1
+        return MAX_RANKS.get(self.key, len(self.names) - 1)
 
     def name(self, rank: int, *, russian: bool = True) -> str:
         names = self.names_ru if russian else self.names
@@ -80,9 +92,9 @@ _EMPIRE_RU = ("Нет", "Чужак", "Крепостной", "Господин"
               "Граф", "Эрл", "Маркиз", "Герцог", "Принц", "Король")
 
 _CQC = ("Helpless", "Mostly Helpless", "Amateur", "Semi Professional", "Professional",
-        "Champion", "Hero", "Legend", "Elite")
+        "Champion", "Hero", "Legend", "Elite", "Elite I", "Elite II", "Elite III", "Elite IV", "Elite V")
 _CQC_RU = ("Беспомощный", "Почти беспомощный", "Любитель", "Полупрофессионал", "Профессионал",
-           "Чемпион", "Герой", "Легенда", "Элита")
+           "Чемпион", "Герой", "Легенда", "Элита", "Элита I", "Элита II", "Элита III", "Элита IV", "Элита V")
 
 LADDERS: dict[str, Ladder] = {
     "Combat": Ladder("Combat", _COMBAT, _COMBAT_RU, "crossed_swords"),

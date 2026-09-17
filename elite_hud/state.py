@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from . import ranks
+from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
 
 log = logging.getLogger(__name__)
@@ -358,6 +358,14 @@ class GameState:
         self.ship_type: str = ""
         self.max_jump_range: float = 0.0
         self.current_jump_range: float = 0.0
+        #: Fuel in the main tank, and how much cargo is aboard: both feed the
+        #: laden jump range.
+        self.fuel_level: float = 0.0
+        self.fuel_capacity: float = 0.0
+        self.cargo_count: int = 0
+        self.unladen_mass: float = 0.0
+        self._drive: jump_range.DriveSpec | None = None
+        self._booster: float = 0.0
 
         #: MissionIDs the commander currently holds.
         self.active_missions: set[int] = set()
@@ -447,20 +455,29 @@ class GameState:
     def _on_Promotion(self, event: dict) -> None:
         """Fires when a rank is gained; the fields name the tracks that moved."""
         for track in ranks.ANNOUNCED:
-            if track in event:
-                index = self.ranks.get(track, 0)
-                ladder = ranks.ladder(track)
-                title = ladder.name(index) if ladder else str(index)
-                self.announcements.append(
-                    Announcement(
-                        kind="rank",
-                        title=title,
-                        detail=track,
-                        value=index,
-                        glyph="star",
-                        tone="success",
-                    )
+            value = event.get(track)
+            if not isinstance(value, int):
+                continue
+            # The field carries the NEW index, so it is also the freshest source
+            # for the rank itself -- Rank is only written at startup.
+            previous = self.ranks.get(track)
+            self.ranks[track] = value
+            self.rank_progress[track] = 0
+            if previous == value:
+                continue
+            index = value
+            ladder = ranks.ladder(track)
+            title = ladder.name(index) if ladder else str(index)
+            self.announcements.append(
+                Announcement(
+                    kind="rank",
+                    title=title,
+                    detail=track,
+                    value=index,
+                    glyph="star",
+                    tone="success",
                 )
+            )
 
     def _on_Progress(self, event: dict) -> None:
         for track in ranks.TRACKS:
@@ -478,14 +495,50 @@ class GameState:
             self.ship_type = str(ship)
         self.ship_ident = str(event.get("ShipIdent") or self.ship_ident)
         self.ship_name = str(event.get("ShipName") or self.ship_name)
+        mass = event.get("UnladenMass")
+        if isinstance(mass, (int, float)) and mass > 0:
+            self.unladen_mass = float(mass)
+        capacity = event.get("FuelCapacity")
+        if isinstance(capacity, dict) and isinstance(capacity.get("Main"), (int, float)):
+            self.fuel_capacity = float(capacity["Main"])
+            if not self.fuel_level:
+                self.fuel_level = self.fuel_capacity
+        self._drive, self._booster = jump_range.build_spec(event)
+
         maximum = event.get("MaxJumpRange")
         if isinstance(maximum, (int, float)) and maximum > 0:
             self.max_jump_range = float(maximum)
-            # Mirrors the maximum until the laden range is computed from the
-            # ship's mass. It must be reassigned on every Loadout: keeping the
-            # previous ship's value made the HUD print a current range larger
-            # than the maximum after a ship swap.
-            self.current_jump_range = float(maximum)
+        self._recompute_jump_range()
+
+    def _recompute_jump_range(self) -> None:
+        """Refresh the laden range after anything that changes the ship's mass."""
+        if self.max_jump_range <= 0:
+            return
+        self.current_jump_range = jump_range.current_range(
+            max_jump_range=self.max_jump_range,
+            unladen_mass=self.unladen_mass,
+            fuel=self.fuel_level,
+            cargo=float(self.cargo_count),
+            spec=self._drive,
+            booster=self._booster,
+        )
+
+    def _on_Cargo(self, event: dict) -> None:
+        count = event.get("Count")
+        if isinstance(count, int):
+            self.cargo_count = count
+            self._recompute_jump_range()
+
+    def _on_FuelScoop(self, event: dict) -> None:
+        total = event.get("Total")
+        if isinstance(total, (int, float)):
+            self.fuel_level = float(total)
+            self._recompute_jump_range()
+
+    def _on_RefuelAll(self, event: dict) -> None:
+        if self.fuel_capacity:
+            self.fuel_level = self.fuel_capacity
+            self._recompute_jump_range()
 
     # -- missions ----------------------------------------------------------
 
@@ -529,6 +582,10 @@ class GameState:
 
     def _on_FSDJump(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
+        level = event.get("FuelLevel")
+        if isinstance(level, (int, float)):
+            self.fuel_level = float(level)
+            self._recompute_jump_range()
 
     def _on_Location(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
