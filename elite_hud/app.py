@@ -866,18 +866,40 @@ def run_carrier_report(config: Config, options: argparse.Namespace) -> int:
 
     print("\n=== промежутки между последовательными прыжками ===")
     print("  (от отправления предыдущего до запроса следующего)")
+
     gaps: list[float] = []
-    for (_, previous_departure), (next_request, _) in zip(requests, requests[1:]):
+    retargets = 0
+    for (previous_request, previous_departure), (next_request, _) in zip(requests, requests[1:]):
         gap = (next_request - previous_departure).total_seconds()
+        if gap <= 0 or next_request <= previous_request:
+            # Asking again while the current spool-up is still running just
+            # changes the destination; it is not a new jump cycle.
+            retargets += 1
+            print(f"  {previous_departure:%m-%d %H:%M:%S} -> {next_request:%m-%d %H:%M:%S}"
+                  f"   {gap/60:6.2f} мин  <- смена цели во время разгона")
+            continue
         gaps.append(gap)
         print(f"  {previous_departure:%m-%d %H:%M:%S} -> {next_request:%m-%d %H:%M:%S}"
               f"   {gap/60:6.2f} мин")
 
+    if retargets:
+        print(f"\n  ({retargets} запрос(ов) пропущено как смена цели, а не новый прыжок)")
+
+    if not gaps:
+        print("\nГодных промежутков нет.")
+        return 0
+
     shortest = min(gaps)
+    shortest_three = sorted(gaps)[:3]
     print(f"\nсамый короткий промежуток: {shortest/60:.2f} мин ({shortest:.0f} с)")
-    print("если вы запрашивали следующий прыжок сразу, как только игра позволяла,")
-    print("то это и есть перезарядка, отсчитанная от отправления.")
-    print(f"\nсейчас в конфиге: carrier.jump_cooldown_seconds = {config.carrier.jump_cooldown_seconds:.0f}")
+    print(f"три самых коротких: {[round(g) for g in shortest_three]} с")
+    print(
+        f"\nзапрос проходил уже через {shortest:.0f} с после отправления, значит перезарядка"
+        f"\nне больше этого — то есть не длиннее {shortest/60:.2f} мин."
+    )
+    configured = config.carrier.jump_cooldown_seconds
+    verdict = "согласуется" if configured <= shortest else "БОЛЬШЕ измеренного — покажет готовность позже, чем игра"
+    print(f"\nсейчас в конфиге: carrier.jump_cooldown_seconds = {configured:.0f}  ({verdict})")
     return 0
 
 

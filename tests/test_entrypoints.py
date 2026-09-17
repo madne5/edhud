@@ -88,6 +88,41 @@ class CarrierReportTests(unittest.TestCase):
             report = self._report(self._journal(Path(tmp), gap_seconds=372))
         self.assertIn("6.20 мин", report)
 
+    def test_a_retarget_during_the_spool_is_not_counted_as_a_cycle(self) -> None:
+        """Changing the destination mid-prepare is not a new jump.
+
+        Real journals contain this: two requests 92 seconds apart for the same
+        carrier, the second moving the departure by two minutes. Treating that
+        as a jump cycle produces a negative gap and, before this was handled,
+        made the tool report it as the shortest one.
+        """
+        base = datetime.now(timezone.utc) - timedelta(hours=6)
+
+        def ts(offset: float) -> str:
+            return (base + timedelta(seconds=offset)).isoformat().replace("+00:00", "Z")
+
+        events = [
+            {"timestamp": ts(0), "event": "Fileheader", "part": 1, "Odyssey": True},
+            {"timestamp": ts(600), "event": "CarrierJumpRequest", "CarrierID": 1,
+             "SystemName": "First", "DepartureTime": ts(1500)},
+            {"timestamp": ts(692), "event": "CarrierJumpRequest", "CarrierID": 1,
+             "SystemName": "Second", "DepartureTime": ts(1620)},
+            {"timestamp": ts(1682), "event": "CarrierJump", "StarSystem": "Second",
+             "SystemAddress": 1},
+            {"timestamp": ts(2400), "event": "CarrierJumpRequest", "CarrierID": 1,
+             "SystemName": "Third", "DepartureTime": ts(3300)},
+        ]
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "Journal.2026-09-16T120000.01.log").write_text(
+                "\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8"
+            )
+            report = self._report(directory)
+
+        self.assertIn("смена цели", report)
+        self.assertIn("пропущено как смена цели", report)
+        self.assertNotIn("самый короткий промежуток: -", report)
+
     def test_a_single_jump_says_there_is_nothing_to_compare(self) -> None:
         with TemporaryDirectory() as tmp:
             report = self._report(self._journal(Path(tmp), gap_seconds=290, jumps=1))

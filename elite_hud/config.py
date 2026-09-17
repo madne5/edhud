@@ -120,11 +120,13 @@ class CarrierConfig:
     #: figure is "at least 15 minutes"; only used when a CarrierJumpRequest
     #: carries no DepartureTime (journals older than Update 14).
     spool_minutes: float = 15.0
-    #: Cooldown after a jump, counted from the moment the carrier arrives.
-    jump_cooldown_seconds: float = 300.0
-    #: How long the jump itself takes, from DepartureTime to arrival. Only used
-    #: to interpret a CarrierJump event, whose timestamp is the arrival.
-    jump_duration_seconds: float = 72.0
+    #: Cooldown after a jump, counted from DepartureTime. Measured from real
+    #: journals at "no more than 296 seconds"; 290 is the tools' value and fits.
+    jump_cooldown_seconds: float = 290.0
+    #: How long the jump itself takes, from DepartureTime to arrival. Measured
+    #: at 59-64 seconds across seventeen jumps. Only used to interpret a
+    #: CarrierJump event, whose timestamp is the arrival.
+    jump_duration_seconds: float = 62.0
     #: Cooldown after cancelling a scheduled jump.
     cancel_cooldown_seconds: float = 60.0
     #: Draw the cooldown segment at all.

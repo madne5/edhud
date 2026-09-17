@@ -52,8 +52,8 @@ desktop_notification = false
 
 [carrier]
 spool_minutes = 15.0
-jump_cooldown_seconds = 300.0
-jump_duration_seconds = 72.0
+jump_cooldown_seconds = 290.0
+jump_duration_seconds = 62.0
 cancel_cooldown_seconds = 60.0
 show_cooldown = true
 

@@ -221,12 +221,12 @@ class CarrierTests(unittest.TestCase):
     def test_the_cooldown_is_five_minutes_from_arrival(self) -> None:
         self._request("2026-03-14T20:30:00Z")
         carrier = self.state.carrier
-        # Departs 20:30:00, arrives 72s later, ready five minutes after that.
-        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 36, 12, tzinfo=timezone.utc))
+        # Departs 20:30:00; the cooldown runs from there, so ready at 20:34:50.
+        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 34, 50, tzinfo=timezone.utc))
         self.assertAlmostEqual(
-            carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 31, 12, tzinfo=timezone.utc)),
-            300.0,
-            msg="right after arrival the cooldown must read a full five minutes",
+            carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 31, 2, tzinfo=timezone.utc)),
+            228.0,
+            msg="right after arrival ~3:48 of the cooldown is left",
         )
         self.assertIsNone(
             carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 37, tzinfo=timezone.utc))
@@ -240,11 +240,11 @@ class CarrierTests(unittest.TestCase):
 
         from_arrival = GameState(ExobiologyTable())
         from_arrival.apply({"event": "CarrierJump", "StarSystem": "Sol", "SystemAddress": 1,
-                            "timestamp": "2026-03-14T20:31:12Z"})  # departure + 72s
+                            "timestamp": "2026-03-14T20:31:02Z"})  # departure + 62s
 
         self.assertEqual(from_request.carrier.ready_at, from_arrival.carrier.ready_at)
         self.assertEqual(from_request.carrier.ready_at,
-                         datetime(2026, 3, 14, 20, 36, 12, tzinfo=timezone.utc))
+                         datetime(2026, 3, 14, 20, 34, 50, tzinfo=timezone.utc))
 
     def test_cancelling_imposes_a_one_minute_cooldown(self) -> None:
         self._request("2026-03-14T20:30:00Z")
@@ -265,17 +265,17 @@ class CarrierTests(unittest.TestCase):
         self.assertFalse(carrier.jump_scheduled)
         self.assertIsNone(carrier.seconds_until_jump())
         # The cooldown keeps running; it is unaffected by the jump starting.
-        # At +0:30 the carrier has not even arrived yet: 42s of jump remain,
-        # then the full five minutes.
+        # The cooldown runs from departure and does not care that the jump is
+        # still in progress.
         self.assertAlmostEqual(
             carrier.seconds_until_ready(datetime(2026, 3, 14, 20, 30, 30, tzinfo=timezone.utc)),
-            342.0,
+            260.0,
         )
 
     def test_ready_is_flagged_only_briefly(self) -> None:
         self._request("2026-03-14T20:30:00Z")
         carrier = self.state.carrier
-        just_ready = datetime(2026, 3, 14, 20, 36, 20, tzinfo=timezone.utc)
+        just_ready = datetime(2026, 3, 14, 20, 35, 10, tzinfo=timezone.utc)
         self.assertTrue(carrier.became_ready(just_ready))
         long_ready = datetime(2026, 3, 14, 21, 30, tzinfo=timezone.utc)
         self.assertFalse(carrier.became_ready(long_ready))
@@ -298,7 +298,7 @@ class CarrierTests(unittest.TestCase):
         self._request("2026-03-14T20:30:00Z")
         carrier = self.state.carrier
         carrier.block_until(datetime(2026, 3, 14, 20, 20, tzinfo=timezone.utc))
-        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 36, 12, tzinfo=timezone.utc))
+        self.assertEqual(carrier.ready_at, datetime(2026, 3, 14, 20, 34, 50, tzinfo=timezone.utc))
 
 
 class RobustnessTests(unittest.TestCase):
