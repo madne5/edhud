@@ -117,10 +117,17 @@ def main() -> int:
         )
         return 2
 
-    data_file = REPO_ROOT / "elite_hud" / "data" / "exobiology.json"
-    if not data_file.is_file():
+    # Ship the whole data directory rather than one named file. Naming files
+    # one at a time is how a newly added table silently fails to reach the
+    # installed build: it works in development, where the file is read from the
+    # source tree, and only the packaged copy is missing it.
+    data_dir = REPO_ROOT / "elite_hud" / "data"
+    required = ("exobiology.json", "materials.json")
+    missing = [name for name in required if not (data_dir / name).is_file()]
+    if missing:
         print(
-            f"missing {data_file}; run tools/build_exobiology_data.py first",
+            f"missing {', '.join(missing)} in {data_dir}; run "
+            "tools/build_exobiology_data.py and tools/build_materials_data.py first",
             file=sys.stderr,
         )
         return 2
@@ -140,7 +147,7 @@ def main() -> int:
         "--paths",
         str(REPO_ROOT),
         "--add-data",
-        f"{data_file}{SEP}elite_hud/data",
+        f"{data_dir}{SEP}elite_hud/data",
         "--version-file",
         str(version_file),
         # Qt loads these dynamically, so PyInstaller cannot see them.

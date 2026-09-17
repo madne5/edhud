@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
 from .footfall import BodySurvey, FootfallPolicy
+from .materials import MaterialTable
 from .unsold import UnsoldData
 
 log = logging.getLogger(__name__)
@@ -330,14 +331,33 @@ class GameState:
         carrier_ready_display_seconds: float = CARRIER_READY_DISPLAY_SECONDS,
         footfall: FootfallPolicy | None = None,
         footfall_label: str = "Первый след",
+        material_table: MaterialTable | None = None,
+        material_rarity: bool = True,
+        material_enabled: bool = True,
+        material_notify: bool = True,
+        rarity_label: str = "Редкость",
+        total_label: str = "Всего",
     ) -> None:
         self.exobiology = exobiology
         self.value_threshold = value_threshold
         self.footfall = footfall or FootfallPolicy()
         #: Sampled or earned but not yet banked.
         self.unsold = UnsoldData()
+        #: Rarity and canonical names; the journal supplies localised names.
+        self.material_table = material_table or MaterialTable()
+        #: Journal symbol (lowercase) -> how many are held.
+        self.holdings: dict[str, int] = {}
+        #: A Materials event has been seen, so the hold is known rather than assumed.
+        self.materials_known = False
+        #: Whether to mention rarity in notifications.
+        self.material_rarity = material_rarity
+        self.material_enabled = material_enabled
+        self.material_notify = material_notify
         #: Text of the first-footfall notification; config supplies the real one.
         self.footfall_label = footfall_label
+        #: Labels for the material notification; config supplies the real ones.
+        self.rarity_label = rarity_label
+        self.total_label = total_label
         self.carrier_spool_seconds = carrier_spool_seconds
         self.carrier_cooldown_seconds = carrier_cooldown_seconds
         self.carrier_jump_seconds = carrier_jump_seconds
@@ -496,6 +516,107 @@ class GameState:
             value = event.get(track)
             if isinstance(value, int):
                 self.rank_progress[track] = value
+
+    # -- materials ---------------------------------------------------------
+
+    def _on_Materials(self, event: dict) -> None:
+        """Seed the whole hold; this event reports everything at once."""
+        if not self.material_enabled:
+            return
+        for kind in ("Raw", "Manufactured", "Encoded"):
+            items = event.get(kind)
+            if not isinstance(items, list):
+                continue
+            for raw in items:
+                if not isinstance(raw, dict):
+                    continue
+                symbol = self.material_table.normalise(str(raw.get("Name") or ""))
+                if not symbol:
+                    continue
+                count = raw.get("Count")
+                self.holdings[symbol] = int(count) if isinstance(count, int) else 0
+        self.materials_known = True
+
+    def _on_MaterialCollected(self, event: dict) -> None:
+        if not self.material_enabled:
+            return
+        symbol = self.material_table.normalise(str(event.get("Name") or ""))
+        if not symbol:
+            return
+        count = event.get("Count")
+        count = int(count) if isinstance(count, int) else 1
+        self.holdings[symbol] = self.holdings.get(symbol, 0) + count
+        if self.material_notify:
+            self._announce_material(
+                symbol, count, str(event.get("Name_Localised") or "")
+            )
+
+    def _on_MaterialDiscarded(self, event: dict) -> None:
+        if not self.material_enabled:
+            return
+        symbol = self.material_table.normalise(str(event.get("Name") or ""))
+        if not symbol:
+            return
+        count = event.get("Count")
+        count = int(count) if isinstance(count, int) else 0
+        self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - count)
+
+    def _on_MaterialTrade(self, event: dict) -> None:
+        """A trader swaps one material for another, at a rate."""
+        paid = event.get("Paid")
+        if isinstance(paid, dict):
+            self._consume_material(paid)
+        received = event.get("Received")
+        if isinstance(received, dict):
+            symbol = self.material_table.normalise(str(received.get("Name") or ""))
+            amount = received.get("Amount")
+            if symbol and isinstance(amount, int):
+                self.holdings[symbol] = self.holdings.get(symbol, 0) + amount
+
+    def _on_Synthesis(self, event: dict) -> None:
+        materials = event.get("Materials")
+        if isinstance(materials, list):
+            for raw in materials:
+                if isinstance(raw, dict):
+                    self._consume_material(raw)
+
+    def _on_EngineeringCraft(self, event: dict) -> None:
+        # The event names ingredients only in some versions; both spellings are
+        # handled because getting this wrong would silently inflate the hold.
+        for key in ("Ingredients", "Materials"):
+            items = event.get(key)
+            if isinstance(items, list):
+                for raw in items:
+                    if isinstance(raw, dict):
+                        self._consume_material(raw)
+
+    def _consume_material(self, entry: dict) -> None:
+        symbol = self.material_table.normalise(str(entry.get("Name") or ""))
+        if not symbol:
+            return
+        amount = entry.get("Count", entry.get("Amount"))
+        amount = int(amount) if isinstance(amount, int) else 0
+        self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - amount)
+
+    def _announce_material(self, symbol: str, count: int, localised: str) -> None:
+        """Queue the pickup notification, e.g. "+1 Сера (Редкость: 1)"."""
+        material = self.material_table.get(symbol)
+        name = self.material_table.display_name(symbol, localised)
+        rarity = material.rarity if material else 0
+        title = f"+{count} {name}"
+        if self.material_rarity and rarity:
+            title = f"{title} ({self.rarity_label}: {rarity})"
+        detail = f"{self.total_label}: {self.holdings.get(symbol, 0)}"
+        self.announcements.append(
+            Announcement(
+                kind="material",
+                title=title,
+                detail=detail,
+                value=self.holdings.get(symbol, 0),
+                glyph="gem",
+                tone="accent",
+            )
+        )
 
     def _on_Commander(self, event: dict) -> None:
         self.commander = str(event.get("Name") or self.commander)

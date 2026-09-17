@@ -268,6 +268,11 @@ class HudApp:
                 min_bio_signals=config.footfall.min_bio_signals,
             ),
             footfall_label=config.overlay.labels.footfall_first,
+            material_rarity=config.materials.rarity,
+            material_enabled=config.materials.enabled,
+            material_notify=config.materials.notify_collected,
+            rarity_label=config.overlay.labels.rarity,
+            total_label=config.overlay.labels.total,
         )
         self.sound = SoundPlayer(config.alerts.sound_file, config.alerts.volume)
         self.sound_min_rank = CONFIDENCE_BY_NAME[

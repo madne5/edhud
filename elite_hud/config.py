@@ -61,6 +61,9 @@ class LabelConfig:
     footfall_first: str = "Первый след"
     #: unredeemed value: "в кармане 343.3M"
     unsold: str = "в кармане"
+    #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
+    rarity: str = "Редкость"
+    total: str = "Всего"
 
 
 @dataclass
@@ -129,6 +132,23 @@ class AlertConfig:
     display_seconds: float = 8.0
     #: Windows toast notification in addition to the HUD flash.
     desktop_notification: bool = False
+
+
+@dataclass
+class MaterialsConfig:
+    """Material pickups and the rarity table.
+
+    Rarity is the only external data the project bundles; the source carries no
+    licence file, so it can be switched off and the notification will simply
+    name the material without a rarity. See tools/build_materials_data.py.
+    """
+
+    #: Track the hold and announce pickups at all.
+    enabled: bool = True
+    #: Announce each pickup. Off still tracks holdings for other uses.
+    notify_collected: bool = True
+    #: Mention rarity in the notification.
+    rarity: bool = True
 
 
 @dataclass
@@ -242,6 +262,7 @@ class Config:
     alerts: AlertConfig = field(default_factory=AlertConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     footfall: FootfallConfig = field(default_factory=FootfallConfig)
+    materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
@@ -267,6 +288,7 @@ class Config:
         _merge(config.alerts, raw.get("alerts"))
         _merge(config.notifications, raw.get("notifications"))
         _merge(config.footfall, raw.get("footfall"))
+        _merge(config.materials, raw.get("materials"))
         _merge(config.carrier, raw.get("carrier"))
         _merge(config.commander, raw.get("commander"))
         _merge(config.update, raw.get("update"))
@@ -355,6 +377,7 @@ class Config:
             ("alerts", self.alerts),
             ("notifications", self.notifications),
             ("footfall", self.footfall),
+            ("materials", self.materials),
             ("carrier", self.carrier),
             ("commander", self.commander),
             ("update", self.update),
