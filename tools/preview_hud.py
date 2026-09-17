@@ -197,7 +197,7 @@ def main() -> int:
             continue
         cooldown_state.apply(event)
     cooldown_state.carrier.cancel()
-    cooldown_state.carrier.last_jump = datetime(2026, 3, 14, 20, 14, 0, tzinfo=timezone.utc)
+    cooldown_state.carrier.ready_at = datetime(2026, 3, 14, 20, 20, 0, tzinfo=timezone.utc)
     written.append(shoot(app, "04-carrier-cooldown", config, cooldown_state, None))
     state_module.utcnow = original
 

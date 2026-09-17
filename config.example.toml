@@ -26,6 +26,7 @@ accent = "#ff9d2e"
 danger = "#ff5555"
 success = "#5ee08a"
 segments = ["carrier", "system", "fss", "bio"]
+status_segments = ["mode", "empire", "federation", "ship", "missions"]
 show_background = true
 show_glyphs = true
 
@@ -33,6 +34,12 @@ show_glyphs = true
 carrier = "ФК"
 carrier_cooldown = "готов через"
 carrier_ready = "готов"
+mode_open = "ОТКРЫТАЯ ИГРА"
+mode_solo = "СОЛО"
+mode_group = "ЧАСТНАЯ СЕССИЯ"
+missions = "миссии"
+jump_max = "макс"
+jump_current = "тек"
 bodies = "тел"
 fss = "FSS"
 bio = "БИО"
@@ -56,6 +63,9 @@ jump_cooldown_seconds = 290.0
 jump_duration_seconds = 62.0
 cancel_cooldown_seconds = 60.0
 show_cooldown = true
+
+[commander]
+mission_capacity = 20
 
 [update]
 enabled = true

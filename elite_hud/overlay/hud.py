@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import Config
 from ..exobiology import Confidence
+from .. import ranks
 from ..formatting import (
     CONFIDENCE_GLYPH,
     CONFIDENCE_LABEL,
@@ -90,6 +91,60 @@ class Segment:
     lead: float = 0.0
 
 
+@dataclass(slots=True)
+class RowStyle:
+    """Fonts and spacing for one row, so rows can differ in size."""
+
+    font: QFont
+    bold_font: QFont
+    metrics: QFontMetricsF
+    bold_metrics: QFontMetricsF
+    padding_x: float
+    padding_y: float
+    glyph_size: float
+    glyph_gap: float
+    plate_radius: float
+    line_height: float
+
+    @classmethod
+    def build(cls, font: QFont, bold_font: QFont, scale: float = 1.0) -> "RowStyle":
+        metrics = QFontMetricsF(font)
+        height = metrics.height()
+        return cls(
+            font=font,
+            bold_font=bold_font,
+            metrics=metrics,
+            bold_metrics=QFontMetricsF(bold_font),
+            padding_x=height * 0.85 * max(0.6, scale),
+            padding_y=height * 0.38 * max(0.6, scale),
+            glyph_size=cap_height(metrics) * GLYPH_CAPHEIGHT_RATIO,
+            glyph_gap=height * 0.34,
+            plate_radius=height * 0.85,
+            line_height=height * 1.42,
+        )
+
+    def metrics_for(self, bold: bool) -> QFontMetricsF:
+        return self.bold_metrics if bold else self.metrics
+
+
+@dataclass(slots=True)
+class Row:
+    """One line of the HUD, with its own style and optional plate."""
+
+    style: RowStyle
+    segments: list[Segment] = field(default_factory=list)
+    #: pixels of blank space above this row
+    gap: float = 0.0
+    #: draw the rounded plate behind it
+    plate: bool = True
+    #: name used in tests and logs
+    kind: str = "primary"
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.segments
+
+
 class HudWindow(QWidget):
     def __init__(self, config: Config, state: GameState) -> None:
         super().__init__(None)
@@ -99,12 +154,18 @@ class HudWindow(QWidget):
         self._alert_until = 0.0
         self._alert_pulse = 0.0
         self._segments: list[Segment] = []
+        self._rows: list[Row] = []
+        self._row_boxes: list[tuple[Row, float, float, float]] = []
         self._last_size: tuple[int, int] = (0, 0)
         self._last_position: tuple[int, int] | None = None
 
         self._font, self._bold_font = self._build_fonts()
         self._metrics = QFontMetricsF(self._font)
         self._bold_metrics = QFontMetricsF(self._bold_font)
+        self._primary_style = RowStyle.build(self._font, self._bold_font, 1.0)
+        self._status_style = RowStyle.build(
+            self._small_font(), self._small_bold_font(), 0.85
+        )
 
         # Qt can deliver paintEvent before the first rebuild(); seed the layout
         # metrics so painting is always safe.
@@ -170,6 +231,17 @@ class HudWindow(QWidget):
         bold.setWeight(QFont.Weight.DemiBold)
         return font, bold
 
+    def _small_font(self) -> QFont:
+        """A slightly smaller face for the secondary row."""
+        font = QFont(self._font)
+        font.setPointSizeF(max(6.0, self._font.pointSizeF() * 0.86))
+        return font
+
+    def _small_bold_font(self) -> QFont:
+        font = QFont(self._bold_font)
+        font.setPointSizeF(max(6.0, self._bold_font.pointSizeF() * 0.86))
+        return font
+
     def show_overlay(self) -> None:
         self.rebuild()
         self.show()
@@ -212,9 +284,138 @@ class HudWindow(QWidget):
         if self._alert is not None and _monotonic() >= self._alert_until:
             self._alert = None
 
-        self._segments = self._compose()
+        self._rows = self._compose_rows()
+        # Kept as an alias so the primary row's segments remain directly
+        # reachable, which the tests and the widen/shrink logic both use.
+        primary = next((row for row in self._rows if row.kind == "primary"), None)
+        self._segments = primary.segments if primary is not None else []
         self._layout()
         self.update()
+
+    def _compose_rows(self) -> list[Row]:
+        """Every row the HUD should draw, top to bottom."""
+        rows: list[Row] = []
+        primary = Row(style=self._primary_style, kind="primary")
+        primary.segments = self._compose()
+        rows.append(primary)
+
+        status = Row(style=self._status_style, kind="status", gap=self._metrics.height() * 0.28)
+        status.segments = self._status_segments()
+        if status.segments:
+            rows.append(status)
+        return rows
+
+    def _status_segments(self) -> list[Segment]:
+        """The always-visible second row."""
+        cfg = self.config.overlay
+        style = self._status_style
+        segments: list[Segment] = []
+        first = True
+
+        def lead() -> float:
+            nonlocal first
+            value = 0.0 if first else style.metrics.height() * 0.95
+            first = False
+            return value
+
+        for name in cfg.status_segments:
+            segment: Segment | None = None
+            if name == "mode":
+                segment = self._mode_segment(lead())
+            elif name == "empire":
+                segment = self._superpower_segment("Empire", lead())
+            elif name == "federation":
+                segment = self._superpower_segment("Federation", lead())
+            elif name == "ship":
+                segment = self._ship_segment(lead())
+            elif name == "missions":
+                segment = self._missions_segment(lead())
+            if segment is not None:
+                segments.append(segment)
+        return segments
+
+    def _mode_segment(self, lead: float) -> Segment | None:
+        mode = self.state.game_mode
+        if not mode:
+            return None
+        labels = self.config.overlay.labels
+        if mode == "Open":
+            text, color = labels.mode_open, self.config.overlay.success
+        elif mode == "Solo":
+            text, color = labels.mode_solo, self.config.overlay.foreground
+        elif mode == "Group":
+            text, color = labels.mode_group, self.config.overlay.accent
+        else:
+            text, color = mode.upper(), self.config.overlay.foreground
+        if mode == "Group" and self.state.group_name:
+            text = f"{text}: {self.state.group_name}"
+        return Segment(
+            glyph="globe" if self.config.overlay.show_glyphs else None,
+            spans=[Span(text, color=color)],
+            glyph_color=color,
+            lead=lead,
+        )
+
+    def _superpower_segment(self, track: str, lead: float) -> Segment | None:
+        """Empire and Federation progress, hidden once the top rank is reached."""
+        index = self.state.ranks.get(track)
+        if index is None:
+            return None
+        ladder = ranks.ladder(track)
+        if ladder is None or ladder.is_max(index):
+            return None
+        percent = self.state.rank_progress.get(track)
+        color = self.config.overlay.accent
+        return Segment(
+            glyph=ladder.glyph if self.config.overlay.show_glyphs else None,
+            spans=[
+                Span(ladder.name(index), color=color),
+                Span(f" {percent}%" if percent is not None else "", color=self.config.overlay.foreground, dim=0.75),
+            ],
+            glyph_color=color,
+            lead=lead,
+        )
+
+    def _ship_segment(self, lead: float) -> Segment | None:
+        ident = self.state.ship_ident
+        if not ident:
+            return None
+        cfg = self.config.overlay
+        spans = [Span(ident, color=cfg.foreground, bold=True)]
+        if self.state.max_jump_range:
+            current = self.state.current_jump_range or self.state.max_jump_range
+            spans.append(
+                Span(
+                    f" ({cfg.labels.jump_max}: {self.state.max_jump_range:.0f} ly"
+                    f" | {cfg.labels.jump_current}: {current:.0f} ly)",
+                    color=cfg.foreground,
+                    dim=0.72,
+                    elastic=True,
+                )
+            )
+        return Segment(
+            glyph="planet" if cfg.show_glyphs else None,
+            spans=spans,
+            glyph_color=cfg.foreground,
+            lead=lead,
+        )
+
+    def _missions_segment(self, lead: float) -> Segment | None:
+        capacity = self.config.commander.mission_capacity
+        if not capacity or not self.state.missions_known:
+            return None
+        held = len(self.state.active_missions)
+        cfg = self.config.overlay
+        color = cfg.danger if held >= capacity else cfg.foreground
+        return Segment(
+            glyph="signal" if cfg.show_glyphs else None,
+            spans=[
+                Span(f"{cfg.labels.missions} ", color=cfg.foreground, dim=0.7),
+                Span(f"{held}/{capacity}", color=color, bold=True),
+            ],
+            glyph_color=color,
+            lead=lead,
+        )
 
     # -- composition -------------------------------------------------------
 
@@ -429,26 +630,37 @@ class HudWindow(QWidget):
             lead=lead,
         )
 
-    def bar_text(self) -> str:
-        """The composed bar as a single plain string (tests, tooltips, logs)."""
+    def row_text(self, row: Row) -> str:
         chunks: list[str] = []
-        for segment in self._segments:
+        for segment in row.segments:
             if segment.glyph is not None:
                 chunks.append(f"[{segment.glyph}]")
             chunks.append("".join(span.text for span in segment.spans).strip())
         return "  ".join(chunk for chunk in chunks if chunk)
 
+    def bar_text(self) -> str:
+        """Every row as one plain string (tests, tooltips, logs)."""
+        return " || ".join(
+            text for text in (self.row_text(row) for row in self._rows) if text
+        )
+
+    def primary_text(self) -> str:
+        """Just the main row, which is what most assertions care about."""
+        primary = next((row for row in self._rows if row.kind == "primary"), None)
+        return self.row_text(primary) if primary is not None else ""
+
     # -- layout & painting -------------------------------------------------
 
-    def _measure(self) -> float:
-        """Total width of the composed segments, excluding padding."""
+    def _measure(self, row: Row) -> float:
+        """Total width of one row's segments, excluding its padding."""
+        style = row.style
         width = 0.0
-        for segment in self._segments:
+        for segment in row.segments:
             width += segment.lead
             if segment.glyph is not None:
-                width += self._glyph_size + self._glyph_gap
+                width += style.glyph_size + style.glyph_gap
             width += sum(
-                (self._bold_metrics if span.bold else self._metrics).horizontalAdvance(span.text)
+                style.metrics_for(span.bold).horizontalAdvance(span.text)
                 for span in segment.spans
             )
         return width
@@ -460,75 +672,90 @@ class HudWindow(QWidget):
         margins = 2 * max(16, self.config.overlay.offset_x)
         return float(max(320, screen.availableGeometry().width() - margins))
 
-    def _fit(self) -> float:
-        """Shrink the bar until it fits on screen.
+    def _fit(self, row: Row, limit: float) -> float:
+        """Shrink one row until it fits.
 
-        First elastic spans (system and body names) are elided, each keeping a
-        readable floor.  If that is still not enough, trailing segments are
-        dropped -- so ``overlay.segments`` doubles as a priority order, most
+        Elastic spans (system and body names) are elided first, each keeping a
+        readable floor. If that is still not enough, trailing segments are
+        dropped -- so a row's segment order doubles as a priority order, most
         important first.
         """
-        limit = self._available_width() - self._padding_x * 2
-        width = self._measure()
-        if width <= limit:
-            return width
+        style = row.style
+        width = self._measure(row)
 
         elastic: list[tuple[Span, QFontMetricsF, float]] = []
-        for segment in self._segments:
+        for segment in row.segments:
             for span in segment.spans:
                 if not span.elastic:
                     continue
-                metrics = self._bold_metrics if span.bold else self._metrics
+                metrics = style.metrics_for(span.bold)
                 elastic.append((span, metrics, metrics.horizontalAdvance(MIN_ELIDED_CHARS)))
 
-        for _ in range(4):
-            if width <= limit or not elastic:
-                break
-            share = (width - limit) / len(elastic)
-            for span, metrics, floor in elastic:
-                current = metrics.horizontalAdvance(span.text)
-                target = int(max(floor, current - share))
-                span.text = metrics.elidedText(span.text, Qt.TextElideMode.ElideRight, target)
-            width = self._measure()
-
-        dropped: list[str] = []
-        while width > limit and len(self._segments) > 1:
-            dropped.append(self._segments.pop().glyph or "segment")
-            width = self._measure()
-        if dropped:
-            log.debug("HUD too wide for the screen; dropped %s", ", ".join(reversed(dropped)))
-
         if width > limit:
-            # Last resort on a very narrow screen: let the surviving elastic
-            # spans shrink past their readable floor. Showing an ellipsis is
-            # better than drawing off the edge of the display.
-            for segment in self._segments:
-                for span in segment.spans:
-                    if not span.elastic:
-                        continue
-                    metrics = self._bold_metrics if span.bold else self._metrics
-                    span.text = metrics.elidedText(
-                        span.text, Qt.TextElideMode.ElideRight, int(metrics.horizontalAdvance(ELLIPSIS))
-                    )
-            width = self._measure()
+            for _ in range(4):
+                if width <= limit or not elastic:
+                    break
+                share = (width - limit) / len(elastic)
+                for span, metrics, floor in elastic:
+                    current = metrics.horizontalAdvance(span.text)
+                    target = int(max(floor, current - share))
+                    span.text = metrics.elidedText(span.text, Qt.TextElideMode.ElideRight, target)
+                width = self._measure(row)
+
+            dropped: list[str] = []
+            while width > limit and len(row.segments) > 1:
+                dropped.append(row.segments.pop().glyph or "segment")
+                width = self._measure(row)
+            if dropped:
+                log.debug(
+                    "HUD row %s too wide for the screen; dropped %s",
+                    row.kind,
+                    ", ".join(reversed(dropped)),
+                )
+
+            if width > limit:
+                # Last resort on a very narrow screen: let the surviving elastic
+                # spans shrink past their readable floor. An ellipsis beats
+                # drawing off the edge of the display.
+                for segment in row.segments:
+                    for span in segment.spans:
+                        if not span.elastic:
+                            continue
+                        metrics = style.metrics_for(span.bold)
+                        span.text = metrics.elidedText(
+                            span.text,
+                            Qt.TextElideMode.ElideRight,
+                            int(metrics.horizontalAdvance(ELLIPSIS)),
+                        )
+                width = self._measure(row)
         return width
 
     def _layout(self) -> None:
-        cfg = self.config.overlay
-        padding_x = self._metrics.height() * 0.85
-        padding_y = self._metrics.height() * 0.38
-        glyph_size = cap_height(self._metrics) * GLYPH_CAPHEIGHT_RATIO
-        glyph_gap = self._metrics.height() * 0.34
-        self._padding_x = padding_x
-        self._padding_y = padding_y
-        self._glyph_size = glyph_size
-        self._glyph_gap = glyph_gap
-        self._plate_radius = self._metrics.height() * 0.85
+        style = self._primary_style
+        # Kept for the tests and for the glyph geometry assertions.
+        self._padding_x = style.padding_x
+        self._padding_y = style.padding_y
+        self._glyph_size = style.glyph_size
+        self._glyph_gap = style.glyph_gap
+        self._plate_radius = style.plate_radius
 
-        width = self._fit()
+        limit = self._available_width()
+        boxes: list[tuple[Row, float, float, float]] = []
+        widest = 0.0
+        y = 0.0
+        for row in self._rows:
+            row_style = row.style
+            inner = max(80.0, limit - row_style.padding_x * 2)
+            plate_width = self._fit(row, inner) + row_style.padding_x * 2
+            plate_height = row_style.line_height + row_style.padding_y * 2
+            y += row.gap
+            boxes.append((row, y, plate_width, plate_height))
+            widest = max(widest, plate_width)
+            y += plate_height
+        self._row_boxes = boxes
 
-        total_width = int(math.ceil(width + padding_x * 2))
-        total_height = int(math.ceil(self._metrics.height() * 1.42 + padding_y * 2))
+        total_width = int(math.ceil(widest))
+        total_height = int(math.ceil(y))
 
         if self._last_size != (total_width, total_height):
             self._last_size = (total_width, total_height)
@@ -649,61 +876,65 @@ class HudWindow(QWidget):
             self.move(*target)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if not self._segments:
+        if not self._row_boxes:
             return
         cfg = self.config.overlay
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
-        rect = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
-        radius = min(rect.height() / 2.0, self._plate_radius)
+        for row, y, plate_width, plate_height in self._row_boxes:
+            style = row.style
+            left = (self.width() - plate_width) / 2.0
+            rect = QRectF(left + 0.5, y + 0.5, plate_width - 1.0, plate_height - 1.0)
+            radius = min(rect.height() / 2.0, style.plate_radius)
 
-        if cfg.show_background:
-            background = QColor(cfg.background)
-            background.setAlpha(cfg.background_alpha)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(background)
-            painter.drawRoundedRect(rect, radius, radius)
+            if cfg.show_background and row.plate:
+                background = QColor(cfg.background)
+                background.setAlpha(cfg.background_alpha)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(background)
+                painter.drawRoundedRect(rect, radius, radius)
 
-        if self._alert is not None:
-            pulse = 0.55 + 0.45 * math.sin(_monotonic() * 6.0)
-            accent = QColor(cfg.accent)
-            accent.setAlphaF(min(1.0, 0.45 + 0.55 * pulse))
-            pen = QPen(accent)
-            pen.setWidthF(1.4)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect, radius, radius)
+            # The alert outline belongs to the row that carries the alert.
+            if row.kind == "primary" and self._alert is not None:
+                pulse = 0.55 + 0.45 * math.sin(_monotonic() * 6.0)
+                accent = QColor(cfg.accent)
+                accent.setAlphaF(min(1.0, 0.45 + 0.55 * pulse))
+                pen = QPen(accent)
+                pen.setWidthF(1.4)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRoundedRect(rect, radius, radius)
 
-        x = self._padding_x
-        cap = cap_height(self._metrics)
-        baseline = (self.height() + cap) / 2.0
+            cap = cap_height(style.metrics)
+            baseline = y + (plate_height + cap) / 2.0
+            x = left + style.padding_x
 
-        for segment in self._segments:
-            x += segment.lead
-            if segment.glyph is not None:
-                glyph_color = QColor(segment.glyph_color or cfg.foreground)
-                draw_glyph(
-                    painter,
-                    x,
-                    glyph_top(baseline, cap, self._glyph_size),
-                    self._glyph_size,
-                    segment.glyph,
-                    glyph_color,
-                )
-                x += self._glyph_size + self._glyph_gap
+            for segment in row.segments:
+                x += segment.lead
+                if segment.glyph is not None:
+                    glyph_color = QColor(segment.glyph_color or cfg.foreground)
+                    draw_glyph(
+                        painter,
+                        x,
+                        glyph_top(baseline, cap, style.glyph_size),
+                        style.glyph_size,
+                        segment.glyph,
+                        glyph_color,
+                    )
+                    x += style.glyph_size + style.glyph_gap
 
-            for span in segment.spans:
-                font = self._bold_font if span.bold else self._font
-                metrics = self._bold_metrics if span.bold else self._metrics
-                color = QColor(span.color or cfg.foreground)
-                if span.dim < 1.0:
-                    color.setAlphaF(max(0.0, min(1.0, color.alphaF() * span.dim)))
-                painter.setFont(font)
-                painter.setPen(color)
-                painter.drawText(QPointF(x, baseline), span.text)
-                x += metrics.horizontalAdvance(span.text)
+                for span in segment.spans:
+                    font = style.bold_font if span.bold else style.font
+                    metrics = style.metrics_for(span.bold)
+                    color = QColor(span.color or cfg.foreground)
+                    if span.dim < 1.0:
+                        color.setAlphaF(max(0.0, min(1.0, color.alphaF() * span.dim)))
+                    painter.setFont(font)
+                    painter.setPen(color)
+                    painter.drawText(QPointF(x, baseline), span.text)
+                    x += metrics.horizontalAdvance(span.text)
 
         painter.end()
 

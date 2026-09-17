@@ -621,6 +621,119 @@ class GlyphTests(unittest.TestCase):
         self.assertEqual(painted, 0)
 
 
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class StatusRowTests(unittest.TestCase):
+    """The second row: mode, superpower ranks, ship, missions."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, config: Config, state: GameState):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # noqa: SLF001
+        hud.rebuild()
+        self.addCleanup(hud.close)
+        return hud
+
+    def _status(self, config: Config, state: GameState) -> str:
+        hud = self._hud(config, state)
+        # An empty status row is not added at all, which is the point.
+        row = next((r for r in hud._rows if r.kind == "status"), None)  # noqa: SLF001
+        return hud.row_text(row) if row is not None else ""
+
+    def _state(self, config: Config) -> GameState:
+        state = make_state(config)
+        state.apply({"event": "LoadGame", "Commander": "Tester", "GameMode": "Open"})
+        state.apply({"event": "Rank", "Combat": 3, "Trade": 13, "Explore": 7,
+                     "Soldier": 2, "Exobiologist": 5, "Empire": 7, "Federation": 6, "CQC": 0})
+        state.apply({"event": "Progress", "Combat": 96, "Trade": 100, "Explore": 36,
+                     "Soldier": 68, "Exobiologist": 60, "Empire": 65, "Federation": 17, "CQC": 25})
+        state.apply({"event": "Loadout", "Ship": "explorer_nx", "ShipName": "KSS Explore",
+                     "ShipIdent": "KSS-14", "MaxJumpRange": 83.735268})
+        return state
+
+    def test_the_row_is_empty_before_the_journal_says_anything(self) -> None:
+        config = Config()
+        empty = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        self.assertEqual(self._status(config, empty), "")
+
+    def test_game_mode_is_shown_in_russian(self) -> None:
+        config = Config()
+        state = self._state(config)
+        self.assertIn("ОТКРЫТАЯ ИГРА", self._status(config, state))
+
+        state.game_mode = "Solo"
+        self.assertIn("СОЛО", self._status(config, state))
+
+        state.game_mode = "Group"
+        state.group_name = "KSS"
+        self.assertIn("ЧАСТНАЯ СЕССИЯ: KSS", self._status(config, state))
+
+    def test_superpower_ranks_show_name_and_percent(self) -> None:
+        config = Config()
+        text = self._status(config, self._state(config))
+        self.assertIn("Барон 65%", text, "Empire rank 7 is Baron at 65%")
+        self.assertIn("Уорент-офицер 17%", text, "Federation rank 6 is Warrant Officer at 17%")
+
+    def test_a_maxed_superpower_disappears(self) -> None:
+        """Nothing to progress towards, so nothing to show."""
+        config = Config()
+        state = self._state(config)
+        state.ranks["Empire"] = 14  # King
+        text = self._status(config, state)
+        self.assertNotIn("Король", text)
+        self.assertNotIn("Барон", text)
+        self.assertIn("Уорент-офицер", text, "the other ladder is unaffected")
+
+    def test_ship_ident_and_range_are_shown(self) -> None:
+        config = Config()
+        text = self._status(config, self._state(config))
+        self.assertIn("KSS-14", text)
+        self.assertIn("макс: 84 ly", text)
+        self.assertIn("тек: 84 ly", text)
+
+    def test_swapping_ships_does_not_leave_the_old_range_behind(self) -> None:
+        """A current range above the maximum is nonsense on screen."""
+        config = Config()
+        state = self._state(config)
+        state.apply({"event": "Loadout", "Ship": "mandalay", "ShipIdent": "KSS-14",
+                     "MaxJumpRange": 72.9})
+        text = self._status(config, state)
+        self.assertIn("макс: 73 ly", text)
+        self.assertIn("тек: 73 ly", text)
+
+    def test_missions_are_counted_against_the_capacity(self) -> None:
+        config = Config()
+        state = self._state(config)
+        state.apply({"event": "Missions", "Active": [
+            {"MissionID": 1}, {"MissionID": 2}, {"MissionID": 3}]})
+        self.assertIn("миссии 3/20", self._status(config, state))
+
+        state.apply({"event": "MissionAccepted", "MissionID": 4})
+        state.apply({"event": "MissionCompleted", "MissionID": 1})
+        self.assertIn("миссии 3/20", self._status(config, state))
+
+    def test_the_row_can_be_configured_away(self) -> None:
+        config = Config()
+        config.overlay.status_segments = []
+        self.assertEqual(self._status(config, self._state(config)), "")
+
+    def test_the_row_never_exceeds_the_screen(self) -> None:
+        config = Config()
+        state = self._state(config)
+        for width in (400, 640, 900, 1280, 1920, 3840):
+            with self.subTest(screen_width=width):
+                hud = self._hud(config, state)
+                hud._available_width = lambda w=width: float(w)  # noqa: SLF001
+                hud.rebuild()
+                self.assertLessEqual(hud.width(), width + 33)
+
+
 class FakeScreen:
     """Just enough of QScreen for the selection rules."""
 

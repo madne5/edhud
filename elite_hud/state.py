@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from . import ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
 
 log = logging.getLogger(__name__)
@@ -256,6 +257,23 @@ class CarrierState:
 
 
 @dataclass(slots=True)
+class Announcement:
+    """Something worth telling the commander about, beyond a bio alert."""
+
+    #: "rank" | "footfall" | "docking" | "material"
+    kind: str
+    title: str
+    detail: str = ""
+    #: optional numeric payload, e.g. the new rank index
+    value: int = 0
+    #: optional glyph name for the notification
+    glyph: str = ""
+    #: override colour role: "accent" | "success" | "danger" | "foreground"
+    tone: str = "accent"
+    at: datetime = field(default_factory=utcnow)
+
+
+@dataclass(slots=True)
 class Alert:
     """A user-visible notification raised by a journal event."""
 
@@ -325,6 +343,31 @@ class GameState:
         self.last_event_at: datetime | None = None
         self.events_seen = 0
 
+        #: "Open" | "Solo" | "Group", as loaded and as changed in session.
+        self.game_mode: str = ""
+        #: Private group name, when the mode is Group.
+        self.group_name: str = ""
+
+        #: Rank index per track, e.g. {"Combat": 3}.
+        self.ranks: dict[str, int] = {}
+        #: Percent towards the next step of each track, 0-100.
+        self.rank_progress: dict[str, int] = {}
+
+        self.ship_ident: str = ""
+        self.ship_name: str = ""
+        self.ship_type: str = ""
+        self.max_jump_range: float = 0.0
+        self.current_jump_range: float = 0.0
+
+        #: MissionIDs the commander currently holds.
+        self.active_missions: set[int] = set()
+        #: False until the journal has actually told us about missions, so the
+        #: HUD does not claim "0/20" before anything has been read.
+        self.missions_known = False
+
+        #: Announcements raised by the events folded in so far.
+        self.announcements: list[Announcement] = []
+
         #: (system_address, body_id, organic key) -> best confidence alerted so far
         self._alerted: dict[tuple[int, int, str], Confidence] = {}
 
@@ -349,6 +392,11 @@ class GameState:
             return []
         return alerts
 
+    def drain_announcements(self) -> list[Announcement]:
+        """Hand over the announcements queued since the last call."""
+        pending, self.announcements = self.announcements, []
+        return pending
+
     def reset(self) -> None:
         self.system.clear()
         self.carrier = CarrierState(ready_display_seconds=self.carrier.ready_display_seconds)
@@ -371,8 +419,54 @@ class GameState:
 
     def _on_LoadGame(self, event: dict) -> None:
         self.commander = str(event.get("Commander") or self.commander)
-        self.game_mode = str(event.get("GameMode") or "")
+        mode = str(event.get("GameMode") or "")
+        if mode:
+            self.game_mode = mode
+        self.group_name = str(event.get("Group") or "")
         self.credits = event.get("Credits", self.credits)
+
+    def _on_GameModeChange(self, event: dict) -> None:
+        """Only Open, Solo and Group are modes we display.
+
+        The game also reports "MainGame" here, which is about the launcher
+        versus CQC rather than about who else is in the instance, so it is
+        ignored.
+        """
+        mode = str(event.get("GameMode") or "")
+        if mode in ("Open", "Solo", "Group"):
+            self.game_mode = mode
+            if mode == "Group":
+                self.group_name = str(event.get("Group") or self.group_name)
+
+    def _on_Rank(self, event: dict) -> None:
+        for track in ranks.TRACKS:
+            value = event.get(track)
+            if isinstance(value, int):
+                self.ranks[track] = value
+
+    def _on_Promotion(self, event: dict) -> None:
+        """Fires when a rank is gained; the fields name the tracks that moved."""
+        for track in ranks.ANNOUNCED:
+            if track in event:
+                index = self.ranks.get(track, 0)
+                ladder = ranks.ladder(track)
+                title = ladder.name(index) if ladder else str(index)
+                self.announcements.append(
+                    Announcement(
+                        kind="rank",
+                        title=title,
+                        detail=track,
+                        value=index,
+                        glyph="star",
+                        tone="success",
+                    )
+                )
+
+    def _on_Progress(self, event: dict) -> None:
+        for track in ranks.TRACKS:
+            value = event.get(track)
+            if isinstance(value, int):
+                self.rank_progress[track] = value
 
     def _on_Commander(self, event: dict) -> None:
         self.commander = str(event.get("Name") or self.commander)
@@ -381,6 +475,45 @@ class GameState:
         ship = event.get("Ship_Localised") or event.get("Ship")
         if ship:
             self.ship = str(ship)
+            self.ship_type = str(ship)
+        self.ship_ident = str(event.get("ShipIdent") or self.ship_ident)
+        self.ship_name = str(event.get("ShipName") or self.ship_name)
+        maximum = event.get("MaxJumpRange")
+        if isinstance(maximum, (int, float)) and maximum > 0:
+            self.max_jump_range = float(maximum)
+            # Mirrors the maximum until the laden range is computed from the
+            # ship's mass. It must be reassigned on every Loadout: keeping the
+            # previous ship's value made the HUD print a current range larger
+            # than the maximum after a ship swap.
+            self.current_jump_range = float(maximum)
+
+    # -- missions ----------------------------------------------------------
+
+    def _on_Missions(self, event: dict) -> None:
+        """Written at startup with whatever missions are still open."""
+        self.missions_known = True
+        active = event.get("Active")
+        if isinstance(active, list):
+            self.active_missions = {
+                int(m["MissionID"]) for m in active
+                if isinstance(m, dict) and isinstance(m.get("MissionID"), int)
+            }
+
+    def _on_MissionAccepted(self, event: dict) -> None:
+        self.missions_known = True
+        mission_id = event.get("MissionID")
+        if isinstance(mission_id, int):
+            self.active_missions.add(mission_id)
+
+    def _close_mission(self, event: dict) -> None:
+        self.missions_known = True
+        mission_id = event.get("MissionID")
+        if isinstance(mission_id, int):
+            self.active_missions.discard(mission_id)
+
+    _on_MissionCompleted = _close_mission
+    _on_MissionAbandoned = _close_mission
+    _on_MissionFailed = _close_mission
 
     # -- systems -----------------------------------------------------------
 

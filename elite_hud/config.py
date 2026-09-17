@@ -41,6 +41,14 @@ class LabelConfig:
     carrier_cooldown: str = "готов через"
     #: shown briefly once it may jump again
     carrier_ready: str = "готов"
+    #: game modes
+    mode_open: str = "ОТКРЫТАЯ ИГРА"
+    mode_solo: str = "СОЛО"
+    mode_group: str = "ЧАСТНАЯ СЕССИЯ"
+    #: second-row labels
+    missions: str = "миссии"
+    jump_max: str = "макс"
+    jump_current: str = "тек"
     bodies: str = "тел"
     fss: str = "FSS"
     bio: str = "БИО"
@@ -84,6 +92,11 @@ class OverlayConfig:
     success: str = "#5ee08a"
     #: Segments shown in the bar, in order. Available: carrier, system, fss, bio.
     segments: list[str] = field(default_factory=lambda: ["carrier", "system", "fss", "bio"])
+    #: Segments in the always-visible second row.
+    #: Available: mode, empire, federation, ship, missions.
+    status_segments: list[str] = field(
+        default_factory=lambda: ["mode", "empire", "federation", "ship", "missions"]
+    )
     #: Draw a subtle rounded plate behind the text.
     show_background: bool = True
     #: Prefix each segment with a small glyph.
@@ -134,6 +147,14 @@ class CarrierConfig:
 
 
 @dataclass
+class CommanderConfig:
+    """Game constants about the commander, not display choices."""
+
+    #: How many missions the game lets a commander hold at once.
+    mission_capacity: int = 20
+
+
+@dataclass
 class UpdateConfig:
     """Self-update from GitHub Releases."""
 
@@ -170,6 +191,7 @@ class Config:
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
+    commander: CommanderConfig = field(default_factory=CommanderConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     #: species name -> credit value, overrides for the bundled table
@@ -192,6 +214,7 @@ class Config:
         _merge(config.overlay.labels, raw.get("overlay", {}).get("labels"))
         _merge(config.alerts, raw.get("alerts"))
         _merge(config.carrier, raw.get("carrier"))
+        _merge(config.commander, raw.get("commander"))
         _merge(config.update, raw.get("update"))
         _merge(config.logging, raw.get("logging"))
 
@@ -218,6 +241,11 @@ class Config:
         if unknown:
             log.warning("dropping unknown overlay.segments %s", unknown)
             overlay.segments = [s for s in overlay.segments if s in VALID_SEGMENTS] or ["system", "fss"]
+
+        unknown_status = [s for s in overlay.status_segments if s not in VALID_STATUS_SEGMENTS]
+        if unknown_status:
+            log.warning("dropping unknown overlay.status_segments %s", unknown_status)
+            overlay.status_segments = [s for s in overlay.status_segments if s in VALID_STATUS_SEGMENTS]
 
         alerts = self.alerts
         alerts.min_value = max(0, int(alerts.min_value))
@@ -250,6 +278,8 @@ class Config:
         carrier.jump_duration_seconds = min(600.0, max(0.0, float(carrier.jump_duration_seconds)))
         carrier.cancel_cooldown_seconds = min(3600.0, max(0.0, float(carrier.cancel_cooldown_seconds)))
 
+        self.commander.mission_capacity = max(1, int(self.commander.mission_capacity))
+
         self.overlay.monitor = str(self.overlay.monitor).strip()
 
     def to_toml(self) -> str:
@@ -263,6 +293,7 @@ class Config:
             ("overlay", self.overlay),
             ("alerts", self.alerts),
             ("carrier", self.carrier),
+            ("commander", self.commander),
             ("update", self.update),
             ("logging", self.logging),
         ):
@@ -289,6 +320,7 @@ class Config:
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
 VALID_SEGMENTS = {"carrier", "system", "fss", "bio"}
+VALID_STATUS_SEGMENTS = {"mode", "empire", "federation", "ship", "missions"}
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
 VALID_UPDATE_ASSETS = {"any", "installer", "portable"}

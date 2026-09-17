@@ -20,6 +20,15 @@ GLYPHS = (
     "gem",
     "warning",
     "signal",
+    "globe",
+    "crossed_swords",
+    "scales",
+    "compass",
+    "rifle",
+    "leaf",
+    "empire",
+    "federation",
+    "arena",
 )
 
 
@@ -157,7 +166,112 @@ def _draw_signal(painter: QPainter, r: QRectF) -> None:
     painter.drawPoint(QPointF(r.center().x(), r.bottom() - r.height() * 0.10))
 
 
+def _draw_globe(painter: QPainter, r: QRectF) -> None:
+    """Game mode: a sphere with a meridian."""
+    radius = r.width() * 0.40
+    painter.drawEllipse(r.center(), radius, radius)
+    painter.drawEllipse(r.center(), radius * 0.42, radius)
+    painter.drawLine(
+        QPointF(r.center().x() - radius, r.center().y()),
+        QPointF(r.center().x() + radius, r.center().y()),
+    )
+
+
+def _draw_crossed_swords(painter: QPainter, r: QRectF) -> None:
+    """Combat rank."""
+    painter.drawLine(
+        QPointF(r.left() + r.width() * 0.16, r.bottom() - r.height() * 0.16),
+        QPointF(r.right() - r.width() * 0.16, r.top() + r.height() * 0.16),
+    )
+    painter.drawLine(
+        QPointF(r.right() - r.width() * 0.16, r.bottom() - r.height() * 0.16),
+        QPointF(r.left() + r.width() * 0.16, r.top() + r.height() * 0.16),
+    )
+
+
+def _draw_scales(painter: QPainter, r: QRectF) -> None:
+    """Trade rank: a balance."""
+    painter.drawLine(
+        QPointF(r.center().x(), r.top() + r.height() * 0.12),
+        QPointF(r.center().x(), r.bottom() - r.height() * 0.16),
+    )
+    painter.drawLine(
+        QPointF(r.left() + r.width() * 0.10, r.top() + r.height() * 0.34),
+        QPointF(r.right() - r.width() * 0.10, r.top() + r.height() * 0.34),
+    )
+    for x in (r.left() + r.width() * 0.10, r.right() - r.width() * 0.10):
+        painter.drawArc(
+            QRectF(x - r.width() * 0.16, r.top() + r.height() * 0.34, r.width() * 0.32, r.height() * 0.32),
+            180 * 16, 180 * 16,
+        )
+
+
+def _draw_compass(painter: QPainter, r: QRectF) -> None:
+    """Exploration rank."""
+    radius = r.width() * 0.40
+    painter.drawEllipse(r.center(), radius, radius)
+    painter.drawLine(
+        QPointF(r.center().x(), r.center().y() - radius * 0.55),
+        QPointF(r.center().x() - radius * 0.35, r.center().y() + radius * 0.55),
+    )
+    painter.drawLine(
+        QPointF(r.center().x(), r.center().y() - radius * 0.55),
+        QPointF(r.center().x() + radius * 0.35, r.center().y() + radius * 0.55),
+    )
+
+
+def _draw_rifle(painter: QPainter, r: QRectF) -> None:
+    """Mercenary (on-foot combat) rank."""
+    painter.drawLine(
+        QPointF(r.left() + r.width() * 0.10, r.top() + r.height() * 0.40),
+        QPointF(r.right() - r.width() * 0.10, r.top() + r.height() * 0.40),
+    )
+    painter.drawLine(
+        QPointF(r.left() + r.width() * 0.34, r.top() + r.height() * 0.40),
+        QPointF(r.left() + r.width() * 0.28, r.bottom() - r.height() * 0.20),
+    )
+
+
+def _draw_leaf(painter: QPainter, r: QRectF) -> None:
+    """Exobiologist rank."""
+    _draw_bio(painter, r)
+
+
+def _draw_empire(painter: QPainter, r: QRectF) -> None:
+    """Empire: a crown. Placeholder shape, replaced by the game's emblem later."""
+    path = QPainterPath()
+    path.moveTo(r.left() + r.width() * 0.10, r.bottom() - r.height() * 0.24)
+    path.lineTo(r.left() + r.width() * 0.18, r.top() + r.height() * 0.26)
+    path.lineTo(r.center().x(), r.top() + r.height() * 0.48)
+    path.lineTo(r.right() - r.width() * 0.18, r.top() + r.height() * 0.26)
+    path.lineTo(r.right() - r.width() * 0.10, r.bottom() - r.height() * 0.24)
+    path.closeSubpath()
+    painter.drawPath(path)
+
+
+def _draw_federation(painter: QPainter, r: QRectF) -> None:
+    """Federation: a five-point star. Placeholder for the game's emblem."""
+    painter.drawPath(_star_points(r.center(), r.width() * 0.44, r.width() * 0.18, 5))
+
+
+def _draw_arena(painter: QPainter, r: QRectF) -> None:
+    """CQC rank: a laurel wreath, drawn as two arcs."""
+    rect = QRectF(r.left() + r.width() * 0.14, r.top() + r.height() * 0.14,
+                  r.width() * 0.72, r.height() * 0.72)
+    painter.drawArc(rect, 100 * 16, 160 * 16)
+    painter.drawArc(rect, 280 * 16, 160 * 16)
+
+
 _DRAWERS = {
+    "globe": _draw_globe,
+    "crossed_swords": _draw_crossed_swords,
+    "scales": _draw_scales,
+    "compass": _draw_compass,
+    "rifle": _draw_rifle,
+    "leaf": _draw_leaf,
+    "empire": _draw_empire,
+    "federation": _draw_federation,
+    "arena": _draw_arena,
     "carrier": _draw_carrier,
     "planet": _draw_planet,
     "radar": _draw_radar,
