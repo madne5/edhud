@@ -24,6 +24,7 @@ from .config import (
     set_update_mode,
 )
 from .exobiology import Confidence, ExobiologyTable
+from .footfall import FootfallPolicy
 from .installation import SingleInstanceGuard
 from .journal.watcher import JournalWatcher
 from .notifications import Notification, NotificationCenter
@@ -260,6 +261,13 @@ class HudApp:
             carrier_cooldown_seconds=config.carrier.jump_cooldown_seconds,
             carrier_jump_seconds=config.carrier.jump_duration_seconds,
             carrier_cancel_seconds=config.carrier.cancel_cooldown_seconds,
+            footfall=FootfallPolicy(
+                enabled=config.footfall.enabled,
+                require_biology=config.footfall.require_biology,
+                require_undiscovered=config.footfall.require_undiscovered,
+                min_bio_signals=config.footfall.min_bio_signals,
+            ),
+            footfall_label=config.overlay.labels.footfall_first,
         )
         self.sound = SoundPlayer(config.alerts.sound_file, config.alerts.volume)
         self.sound_min_rank = CONFIDENCE_BY_NAME[

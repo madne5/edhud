@@ -57,6 +57,8 @@ class LabelConfig:
     at_least: str = "≥"
     waiting: str = "ожидание журнала"
     no_system: str = "нет данных"
+    #: notification title when landing on a body would be a first footfall
+    footfall_first: str = "Первый след"
 
 
 @dataclass
@@ -118,6 +120,25 @@ class AlertConfig:
     display_seconds: float = 8.0
     #: Windows toast notification in addition to the HUD flash.
     desktop_notification: bool = False
+
+
+@dataclass
+class FootfallConfig:
+    """When to announce that landing somewhere would be a first footfall.
+
+    The raw journal signal is far too common to announce: across the six
+    journals this project tests against, 347 of 987 scanned bodies are landable
+    and un-walked, but only 35 of those have biology at all. The defaults here
+    are what turn those 347 into 35.
+    """
+
+    enabled: bool = True
+    #: Only bodies that actually have biology, i.e. something to gain the x5 on.
+    require_biology: bool = True
+    #: Also require that nobody has scanned the body before.
+    require_undiscovered: bool = False
+    #: Minimum biological signal count; only used when require_biology is set.
+    min_bio_signals: int = 1
 
 
 @dataclass
@@ -211,6 +232,7 @@ class Config:
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    footfall: FootfallConfig = field(default_factory=FootfallConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
@@ -235,6 +257,7 @@ class Config:
         _merge(config.overlay.labels, raw.get("overlay", {}).get("labels"))
         _merge(config.alerts, raw.get("alerts"))
         _merge(config.notifications, raw.get("notifications"))
+        _merge(config.footfall, raw.get("footfall"))
         _merge(config.carrier, raw.get("carrier"))
         _merge(config.commander, raw.get("commander"))
         _merge(config.update, raw.get("update"))
@@ -322,6 +345,7 @@ class Config:
             ("overlay", self.overlay),
             ("alerts", self.alerts),
             ("notifications", self.notifications),
+            ("footfall", self.footfall),
             ("carrier", self.carrier),
             ("commander", self.commander),
             ("update", self.update),

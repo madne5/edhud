@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
+from .footfall import BodySurvey, FootfallPolicy
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ class SystemState:
     #: BodyIDs already counted towards ``scanned_bodies`` in this system
     scanned_ids: set[int] = field(default_factory=set)
     bodies: dict[int, BodyBio] = field(default_factory=dict)
+    #: Landing and biology knowledge per BodyID, for first-footfall calls.
+    surveys: dict[int, "BodySurvey"] = field(default_factory=dict)
 
     #: highest-confidence valuable organic found in this system
     best_confidence: Confidence = Confidence.NONE
@@ -113,6 +116,7 @@ class SystemState:
         self.scanned_bodies = 0
         self.scanned_ids.clear()
         self.bodies.clear()
+        self.surveys.clear()
         self.best_confidence = Confidence.NONE
         self.best_value = 0
         self.best_label = ""
@@ -323,9 +327,14 @@ class GameState:
         carrier_jump_seconds: float = DEFAULT_CARRIER_JUMP_SECONDS,
         carrier_cancel_seconds: float = DEFAULT_CARRIER_CANCEL_SECONDS,
         carrier_ready_display_seconds: float = CARRIER_READY_DISPLAY_SECONDS,
+        footfall: FootfallPolicy | None = None,
+        footfall_label: str = "Первый след",
     ) -> None:
         self.exobiology = exobiology
         self.value_threshold = value_threshold
+        self.footfall = footfall or FootfallPolicy()
+        #: Text of the first-footfall notification; config supplies the real one.
+        self.footfall_label = footfall_label
         self.carrier_spool_seconds = carrier_spool_seconds
         self.carrier_cooldown_seconds = carrier_cooldown_seconds
         self.carrier_jump_seconds = carrier_jump_seconds
@@ -688,6 +697,13 @@ class GameState:
         if count > body.signals:
             body.signals = count
 
+        # Biology is reported before the body itself is resolved, so this is
+        # remembered rather than acted on: the landing data arrives with Scan,
+        # and the call needs both.
+        survey = self._survey(body_id, body.name)
+        survey.observe_signals(event.get("Signals"), genuses=event.get("Genuses") or ())
+        self._maybe_announce_footfall(survey)
+
         alerts: list[Alert] = []
         if not with_genuses:
             return None
@@ -724,10 +740,58 @@ class GameState:
         name = body.name
         if "Belt Cluster" in name or name.endswith("Ring"):
             return
+
+        self._maybe_announce_footfall(self._survey(body_id, name), event)
+
         if body_id in self.system.scanned_ids:
             return
         self.system.scanned_ids.add(body_id)
         self.system.scanned_bodies += 1
+
+    # -- first footfall ----------------------------------------------------
+
+    def _survey(self, body_id: int, name: str = "") -> BodySurvey:
+        """The footfall record for a body of the current system."""
+        survey = self.system.surveys.get(body_id)
+        if survey is None:
+            survey = BodySurvey(body_id=body_id, name=name, system=self.system.name)
+            self.system.surveys[body_id] = survey
+        elif name and not survey.name:
+            survey.name = name
+        return survey
+
+    def _maybe_announce_footfall(
+        self, survey: BodySurvey, scan_event: dict | None = None
+    ) -> None:
+        """Announce an un-walked, landable, worthwhile body -- exactly once.
+
+        Called from both the scan and the signal paths because the two arrive in
+        either order: ``FSSBodySignals`` precedes ``Scan`` for 344 of the 346
+        bodies in the journals this was built against, but a DSS pass on an
+        already-scanned body reports its biology afterwards.
+
+        Queues on ``self.announcements`` rather than returning, because the
+        dispatcher treats a handler's return value as bio alerts.
+        """
+        if scan_event is not None:
+            survey.observe_scan(scan_event)
+        if not self.footfall.admits(survey):
+            return
+        survey.announced = True
+        detail = survey.name or f"#{survey.body_id}"
+        suffix = survey.describe()
+        if suffix:
+            detail = f"{detail} · {suffix}"
+        self.announcements.append(
+            Announcement(
+                kind="footfall",
+                title=self.footfall_label,
+                detail=detail,
+                value=survey.bio_signals,
+                glyph="leaf",
+                tone="success",
+            )
+        )
 
     # -- organics ----------------------------------------------------------
 
