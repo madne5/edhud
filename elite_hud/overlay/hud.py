@@ -422,6 +422,8 @@ class HudWindow(QWidget):
                 segment = self._faction_segment(0.0)
             elif name == "crime":
                 segment = self._crime_segment(0.0)
+            elif name == "cartography":
+                segment = self._cartography_segment(0.0)
             if segment is not None:
                 segments.append(segment)
         return self._apply_leads(segments, style.metrics.height() * 0.95)
@@ -456,14 +458,19 @@ class HudWindow(QWidget):
         ladder = ranks.ladder(track)
         if ladder is None or ladder.is_max(index):
             return None
+        cfg = self.config.overlay
+        color = cfg.accent
+        spans = [Span(ladder.name(index), color=color)]
+        # The percentage is what the game reported at login: Rank and Progress
+        # are written once per session, so it cannot move while playing. Shown
+        # by default because it is still true and still resets on promotion,
+        # but it can be switched off for anyone who reads it as a live figure.
         percent = self.state.rank_progress.get(track)
-        color = self.config.overlay.accent
+        if cfg.superpower_progress and percent is not None:
+            spans.append(Span(f" {percent}%", color=cfg.foreground, dim=0.75))
         return Segment(
-            glyph=ladder.glyph if self.config.overlay.show_glyphs else None,
-            spans=[
-                Span(ladder.name(index), color=color),
-                Span(f" {percent}%" if percent is not None else "", color=self.config.overlay.foreground, dim=0.75),
-            ],
+            glyph=ladder.glyph if cfg.show_glyphs else None,
+            spans=spans,
             glyph_color=color,
             lead=lead,
         )
@@ -506,6 +513,31 @@ class HudWindow(QWidget):
                 Span(f"{held}/{capacity}", color=color, bold=True),
             ],
             glyph_color=color,
+            lead=lead,
+        )
+
+    def _cartography_segment(self, lead: float) -> Segment | None:
+        """Unsold exploration data, counted rather than valued.
+
+        Deliberately no credit figure: see elite_hud/cartography.py for why the
+        count is shown and the money is not.
+        """
+        hold = self.state.cartography
+        if hold.empty:
+            return None
+        cfg = self.config.overlay
+        return Segment(
+            glyph="radar" if cfg.show_glyphs else None,
+            spans=[
+                Span(f"{cfg.labels.cartography} ", color=cfg.foreground, dim=0.7),
+                Span(str(hold.body_count), color=cfg.accent, bold=True),
+                Span(
+                    f" {cfg.labels.bodies_short} / {hold.system_count} {cfg.labels.systems_short}",
+                    color=cfg.foreground,
+                    dim=0.7,
+                ),
+            ],
+            glyph_color=cfg.accent,
             lead=lead,
         )
 

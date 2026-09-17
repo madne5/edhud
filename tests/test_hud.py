@@ -1377,3 +1377,48 @@ class CrimeSegmentTests(unittest.TestCase):
         hud = self._hud(state, config)
         self.assertNotIn("штраф", hud.bar_text())
         hud.close()
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class SuperpowerProgressTests(unittest.TestCase):
+    """The percentage is a login snapshot and can be switched off."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, config, state):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    def _state(self, config):
+        from elite_hud.state import GameState
+
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state.apply({"event": "Rank", "Empire": 9, "Federation": 6})
+        state.apply({"event": "Progress", "Empire": 13, "Federation": 28})
+        return state
+
+    def test_the_percentage_shows_by_default(self) -> None:
+        config = Config()
+        hud = self._hud(config, self._state(config))
+        text = hud.bar_text()
+        self.assertIn("Граф", text)
+        self.assertIn("13%", text)
+        hud.close()
+
+    def test_it_can_be_switched_off(self) -> None:
+        config = Config()
+        config.overlay.superpower_progress = False
+        hud = self._hud(config, self._state(config))
+        text = hud.bar_text()
+        # The rank itself stays: it does update, on promotion.
+        self.assertIn("Граф", text)
+        self.assertNotIn("13%", text)
+        hud.close()

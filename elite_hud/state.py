@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
+from .cartography import CartographyHold, is_sellable_body
 from .crime import CrimeRecord
 from .footfall import BodySurvey, FootfallPolicy
 from .materials import MaterialTable
@@ -454,6 +455,8 @@ class GameState:
         self.jump_plan = JumpPlan()
         #: Fines owed and notoriety.
         self.crime = CrimeRecord()
+        #: Exploration data carried but not yet sold.
+        self.cartography = CartographyHold()
         #: The faction we are following, in the current system.
         self.faction = FactionStatus(wanted=faction_name)
         self.faction_match = faction_match
@@ -1093,6 +1096,11 @@ class GameState:
 
         self._maybe_announce_footfall(self._survey(body_id, name), event)
 
+        # Counted for the cartographics hold as well as for the system total:
+        # this is what is carried, and only a sale empties it.
+        if is_sellable_body(name):
+            self.cartography.add_scan(self.system.name, body_id)
+
         if body_id in self.system.scanned_ids:
             return
         self.system.scanned_ids.add(body_id)
@@ -1185,6 +1193,20 @@ class GameState:
         return alerts
 
     # -- unsold value ------------------------------------------------------
+
+    def _on_SAAScanComplete(self, event: dict) -> None:
+        """A surface scan; mapped bodies are worth more, so they are tracked."""
+        body_id = event.get("BodyID")
+        if isinstance(body_id, int):
+            self.cartography.add_mapping(self.system.name, body_id)
+
+    def _on_MultiSellExplorationData(self, event: dict) -> None:
+        """Selling at Universal Cartographics empties the whole hold."""
+        self.cartography.clear()
+
+    def _on_SellExplorationData(self, event: dict) -> None:
+        # The single-system form of the same sale.
+        self.cartography.clear()
 
     def _on_SellOrganicData(self, event: dict) -> None:
         """A sale empties the biological hold."""

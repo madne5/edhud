@@ -71,6 +71,11 @@ class LabelConfig:
     notoriety: str = "Плохая репутация"
     #: unpaid fines
     fines: str = "штраф"
+    #: unsold exploration data, counted rather than valued
+    cartography: str = "картография"
+    #: units for the cartography counts
+    systems_short: str = "сист."
+    bodies_short: str = "тел"
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
     #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
@@ -128,9 +133,16 @@ class OverlayConfig:
             "next",
             "faction",
             "crime",
+            "cartography",
             "unsold",
         ]
     )
+    #: Show the percentage towards the next superpower rank.
+    #:
+    #: Off by default is tempting, but the figure is genuine -- it is what the
+    #: game reported at login and it resets on promotion. It simply cannot move
+    #: during a session, because Rank and Progress are written once at login.
+    superpower_progress: bool = True
     #: Draw a subtle rounded plate behind the text.
     show_background: bool = True
     #: Prefix each segment with a small glyph.
@@ -471,6 +483,7 @@ STATUS_SEGMENT_NAMES: dict[str, str] = {
     "next": "Цель прыжка",
     "faction": "Фракция",
     "crime": "Розыск",
+    "cartography": "Картография",
     "unsold": "К зачислению",
 }
 
@@ -484,6 +497,7 @@ VALID_STATUS_SEGMENTS = {
     "next",
     "faction",
     "crime",
+    "cartography",
 }
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
