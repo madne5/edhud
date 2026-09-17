@@ -40,6 +40,17 @@ from .update_service import UpdateEvent, UpdateService
 
 log = logging.getLogger("elite_hud")
 
+
+def qt_text(text: str) -> str:
+    """Make a string safe to show in a Qt widget.
+
+    Qt reads a single ``&`` in a menu or action label as the mnemonic marker and
+    does not draw it, so a faction called "Traders & Explorers" appeared as
+    "Traders  Explorers" and looked like the ampersand had been rejected. The
+    doubled form is how Qt spells a literal one.
+    """
+    return str(text).replace("&", "&&")
+
 #: Never apply more than this many events in a single UI tick, so a long
 #: history replay cannot freeze the overlay.
 MAX_EVENTS_PER_TICK = 2000
@@ -580,7 +591,9 @@ class HudApp:
         submenu = menu.addMenu("Фракция")
         current = self.config.faction.name
         label = current or "не выбрана"
-        self._faction_actions["status"] = submenu.addAction(f"Отслеживается: {label}")
+        self._faction_actions["status"] = submenu.addAction(
+            qt_text(f"Отслеживается: {label}")
+        )
         self._faction_actions["status"].setEnabled(False)
         submenu.addAction("Задать фракцию…", self._prompt_faction)
         if current:
@@ -605,7 +618,7 @@ class HudApp:
         persisted = set_config_value(path, "faction", "name", name)
         action = self._faction_actions.get("status")
         if action is not None:
-            action.setText(f"Отслеживается: {name or 'не выбрана'}")
+            action.setText(qt_text(f"Отслеживается: {name or 'не выбрана'}"))
         if self.hud is not None:
             self.hud.rebuild()
         note = "" if persisted else " (не сохранилось в config.toml)"
@@ -667,7 +680,7 @@ class HudApp:
         group.setExclusive(True)
         current = self.config.overlay.monitor
         for value, label in HudWindow.screen_choices():
-            action = monitors.addAction(label)
+            action = monitors.addAction(qt_text(label))
             action.setCheckable(True)
             action.setChecked(value == current)
             action.triggered.connect(lambda _checked=False, v=value: self._set_monitor(v))

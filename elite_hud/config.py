@@ -561,6 +561,12 @@ def set_config_value(path: Path, section: str, key: str, value: str) -> bool:
     Rewriting the whole file from ``to_toml`` would discard the comments a user
     added, so this edits the single line instead. Returns False when the file is
     missing or the edit could not be written.
+
+    The value is rendered through :func:`_toml_value` rather than wrapped in
+    quotes by hand. Doing it by hand meant a value containing a quotation mark or
+    a backslash produced invalid TOML, and an unreadable config is not a
+    cosmetic problem: ``Config.load`` falls back to *every* default, so one
+    awkward character in one setting silently discards the whole file.
     """
     if not path.is_file():
         return False
@@ -583,14 +589,14 @@ def set_config_value(path: Path, section: str, key: str, value: str) -> bool:
             continue
         existing = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
         if existing == key:
-            lines[index] = f'{key} = "{value}"'
+            lines[index] = f"{key} = {_toml_value(str(value))}"
             inserted = True
             break
 
     if not inserted:
         if not found_section:
             lines += ["", f"[{section}]"]
-        lines.append(f'{key} = "{value}"')
+        lines.append(f"{key} = {_toml_value(str(value))}")
 
     try:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")

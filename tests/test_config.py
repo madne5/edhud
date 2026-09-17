@@ -464,3 +464,38 @@ class MissingSectionTests(unittest.TestCase):
         reloaded = Config.load(path)
         self.assertEqual(reloaded.overlay.segments, ["system"])
         self.assertEqual(reloaded.faction.match, "contains")
+
+
+class ConfigEscapingTests(unittest.TestCase):
+    """A value that breaks the TOML takes the whole config with it."""
+
+    def _path(self) -> Path:
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        ensure_config_file(path)
+        return path
+
+    def test_an_ampersand_round_trips(self) -> None:
+        """The faction this was written for is "Traders & Explorers"."""
+        path = self._path()
+        set_config_value(path, "faction", "name", "Traders & Explorers")
+        self.assertEqual(Config.load(path).faction.name, "Traders & Explorers")
+
+    def test_a_quote_round_trips(self) -> None:
+        path = self._path()
+        set_config_value(path, "faction", "name", 'The "Best" Faction')
+        self.assertEqual(Config.load(path).faction.name, 'The "Best" Faction')
+
+    def test_a_backslash_round_trips(self) -> None:
+        path = self._path()
+        set_config_value(path, "faction", "name", "Back\\slash")
+        self.assertEqual(Config.load(path).faction.name, "Back\\slash")
+
+    def test_a_broken_value_does_not_discard_the_rest_of_the_file(self) -> None:
+        """Config.load silently falls back to every default on a parse error,
+        so one awkward character used to lose unrelated settings too."""
+        path = self._path()
+        set_config_value(path, "overlay", "font_size", "15")
+        set_config_value(path, "faction", "name", 'Quote " here')
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.overlay.font_size, 15)
+        self.assertEqual(reloaded.faction.name, 'Quote " here')
