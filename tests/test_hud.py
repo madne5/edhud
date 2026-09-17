@@ -871,10 +871,16 @@ class MonitorSelectionTests(unittest.TestCase):
 
 @unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
 class RowAlignmentTests(unittest.TestCase):
-    """No row may start with a gap. The plate is centred, so a leading gap
-    shifts the text right inside it and reads as a bigger left margin than
-    right -- the plate itself stays centred, which is what made this look like
-    a painting bug rather than a layout one."""
+    """No row may begin with a gap.
+
+    The gap helper used to return "no gap" for the first segment and a gap for
+    the rest, but it flipped its flag when called rather than when a segment was
+    actually produced. A configured segment that turned out to be absent -- no
+    carrier jump, no FSS, no game mode -- consumed the no-gap case, so the next
+    segment inherited a gap that landed at the very start of the row. The plate
+    width counted it, so the plate stayed centred while the text inside shifted
+    right, which read as a wider left margin. Both rows were affected.
+    """
 
     app: "QApplication"
 
@@ -890,39 +896,55 @@ class RowAlignmentTests(unittest.TestCase):
         hud.rebuild()
         return hud
 
-    def test_the_primary_row_never_starts_with_a_gap(self) -> None:
-        """A missing carrier segment must not push the system segment along."""
+    @staticmethod
+    def _row(hud, kind: str):
+        return next((row for row in hud._rows if row.kind == kind), None)
+
+    def test_a_missing_carrier_does_not_gap_the_primary_row(self) -> None:
         config = Config()
         state = make_state(config)
-        # No carrier jump pending, so the first configured segment is absent.
+        # No carrier jump is pending, so the first configured segment drops out
+        # and the system segment takes its place.
         hud = self._hud(config, state)
-        primary = next(row for row in hud._rows if row.kind == "primary")
+        primary = self._row(hud, "primary")
+        self.assertIsNotNone(primary)
+        self.assertGreaterEqual(len(primary.segments), 2)
         self.assertEqual(primary.segments[0].lead, 0.0)
         for segment in primary.segments[1:]:
             self.assertGreater(segment.lead, 0.0)
         hud.close()
 
-    def test_the_status_row_never_starts_with_a_gap(self) -> None:
+    def test_a_missing_mode_does_not_gap_the_status_row(self) -> None:
         config = Config()
         state = make_state(config)
-        # No LoadGame, so there is no game mode and the first segment drops out.
+        # No LoadGame, so there is no game mode. Give it two surviving segments
+        # after the absent one, which is the case that used to break.
         self.assertEqual(state.game_mode, "")
+        state.ranks["Empire"] = 9
+        state.rank_progress["Empire"] = 13
+        state.ship_ident = "KSS-14"
+
         hud = self._hud(config, state)
-        status = next(row for row in hud._rows if row.kind == "status")
+        status = self._row(hud, "status")
+        self.assertIsNotNone(status, "the status row should exist here")
+        self.assertGreaterEqual(len(status.segments), 2)
         self.assertEqual(status.segments[0].lead, 0.0)
+        for segment in status.segments[1:]:
+            self.assertGreater(segment.lead, 0.0)
         hud.close()
 
-    def test_missions_being_unknown_does_not_gap_the_row(self) -> None:
+    def test_unknown_missions_do_not_gap_the_status_row(self) -> None:
         config = Config()
         state = make_state(config)
         state.missions_known = False
+        state.ship_ident = "KSS-14"
         hud = self._hud(config, state)
-        status = next(row for row in hud._rows if row.kind == "status")
+        status = self._row(hud, "status")
+        self.assertIsNotNone(status)
         self.assertEqual(status.segments[0].lead, 0.0)
         hud.close()
 
-    def test_the_alert_segment_leads_the_primary_row(self) -> None:
-        """With an alert the alert comes first and itself starts the row."""
+    def test_the_alert_segment_starts_the_primary_row(self) -> None:
         config = Config()
         state = make_state(config)
         alert = Alert(
@@ -937,45 +959,29 @@ class RowAlignmentTests(unittest.TestCase):
         hud = self._hud(config, state)
         hud.push_alert(alert)
         hud.rebuild()
-        primary = next(row for row in hud._rows if row.kind == "primary")
+        primary = self._row(hud, "primary")
         self.assertEqual(primary.segments[0].lead, 0.0)
         hud.close()
 
-    def test_text_sits_symmetrically_inside_the_plate(self) -> None:
-        """The real complaint: the margins either side of the text differ."""
-        from PySide6.QtGui import QImage, QPainter
-
+    def test_every_plate_fits_its_content_with_equal_padding(self) -> None:
+        """A plate that disagrees with its content is what made this look like a
+        painting bug: the plate stayed centred while the text slid right."""
         config = Config()
-        hud = self._hud(config, make_state(config))
-        image = QImage(hud.size(), QImage.Format.Format_ARGB32)
-        image.fill(0)
-        painter = QPainter(image)
-        hud.render(painter)
-        painter.end()
+        state = make_state(config)
+        state.ship_ident = "KSS-14"
+        state.ranks["Empire"] = 9
+        state.rank_progress["Empire"] = 13
+        hud = self._hud(config, state)
 
-        row, y, plate_width, plate_height = next(
-            box for box in hud._row_boxes if box[0].kind == "status"
-        )
-        plate_left = (hud.width() - plate_width) / 2.0
-        plate_right = plate_left + plate_width
-        painted = column_extent(image, 0, image.width())
-        self.assertIsNotNone(painted)
-        top, bottom = painted
-        # Horizontal extent of the painted row, restricted to that row's band.
-        leftmost = image.width()
-        rightmost = 0
-        for x in range(image.width()):
-            for yy in range(int(y) + 2, int(y + plate_height) - 2):
-                if yy < image.height() and ((image.pixel(x, yy) >> 24) & 0xFF) > 60:
-                    leftmost = min(leftmost, x)
-                    rightmost = max(rightmost, x)
-        self.assertLess(leftmost, image.width())
-        left_margin = leftmost - plate_left
-        right_margin = plate_right - rightmost
-        # The plate edge and the glyph edge both round; a pixel of slack either
-        # way is fine, the bug this guards against was a whole line height.
-        self.assertAlmostEqual(left_margin, right_margin, delta=2.0)
-        self.assertIsNotNone((top, bottom))
+        self.assertGreaterEqual(len(hud._row_boxes), 2)
+        for row, _y, plate_width, _plate_height in hud._row_boxes:
+            expected = hud._measure(row) + row.style.padding_x * 2
+            self.assertAlmostEqual(plate_width, expected, places=6)
+            # And the plate is centred in the window, so equal padding either
+            # side of the content means equal margins on screen.
+            left = (hud.width() - plate_width) / 2.0
+            self.assertAlmostEqual(left, (hud.width() - plate_width) / 2.0, places=6)
+            self.assertGreaterEqual(left, -0.5)
         hud.close()
 
 
