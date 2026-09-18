@@ -481,11 +481,18 @@ class HudWindow(QWidget):
         )
 
     def _ship_segment(self, lead: float) -> Segment | None:
-        ident = self.state.ship_ident
-        if not ident:
+        """The ship's model, with its jump range.
+
+        The ident ("KSS-14") is the commander's own label and says nothing about
+        what they are flying, so the model name is shown instead -- Caspian
+        Explorer, Panther Clipper Mk II -- falling back to the journal's symbol
+        when no event has named that ship yet.
+        """
+        model = self.state.ship_model or self.state.ship_type
+        if not model:
             return None
         cfg = self.config.overlay
-        spans = [Span(ident, color=cfg.foreground, bold=True)]
+        spans = [Span(model, color=cfg.foreground, bold=True)]
         if self.state.max_jump_range:
             current = self.state.current_jump_range or self.state.max_jump_range
             spans.append(
@@ -682,6 +689,8 @@ class HudWindow(QWidget):
                 segment = self._system_segment(0.0)
             elif name == "balance":
                 segment = self._balance_segment(0.0)
+            elif name == "cargo":
+                segment = self._cargo_segment(0.0)
             elif name == "fss":
                 segment = self._fss_segment(0.0)
             elif name == "bio":
@@ -701,6 +710,31 @@ class HudWindow(QWidget):
                 )
             )
         return segments
+
+    def _cargo_segment(self, lead: float) -> Segment | None:
+        """The hold: tonnes carried of the tonnes available.
+
+        Capacity comes from Loadout and the count from the live status file,
+        falling back to the Cargo event. Shown in amber once the hold is full,
+        because a full hold is why a mining run ends.
+        """
+        capacity = self.state.cargo_capacity
+        if capacity <= 0:
+            return None
+        cfg = self.config.overlay
+        used = max(0, self.state.cargo_count)
+        full = used >= capacity
+        colour = cfg.danger if full else cfg.accent
+        return Segment(
+            glyph="cargo" if cfg.show_glyphs else None,
+            spans=[
+                Span(f"{used}", color=colour, bold=True),
+                Span(f"/{capacity}", color=cfg.foreground, dim=0.75),
+                Span(f" {cfg.labels.tonnes}", color=cfg.foreground, dim=0.7),
+            ],
+            glyph_color=colour,
+            lead=lead,
+        )
 
     def _balance_segment(self, lead: float) -> Segment | None:
         """The credit balance.

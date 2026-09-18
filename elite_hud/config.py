@@ -73,6 +73,8 @@ class LabelConfig:
     fines: str = "штраф"
     #: unsold exploration data, counted rather than valued
     cartography: str = "картография"
+    #: tonnes, for the cargo hold
+    tonnes: str = "т"
     #: units for the cartography counts
     systems_short: str = "сист."
     bodies_short: str = "тел"
@@ -118,25 +120,19 @@ class OverlayConfig:
     success: str = "#5ee08a"
     #: Segments shown in the bar, in order. Available: carrier, system, fss, bio.
     segments: list[str] = field(
-        default_factory=lambda: ["carrier", "system", "balance", "fss", "bio"]
+        default_factory=lambda: [
+            "carrier",
+            "system",
+            "balance",
+            "ship",
+            "cargo",
+            "missions",
+        ]
     )
     #: Segments in the always-visible second row.
     #: Available: mode, empire, federation, ship, missions, unsold, next,
     #: faction, crime.
-    status_segments: list[str] = field(
-        default_factory=lambda: [
-            "mode",
-            "empire",
-            "federation",
-            "ship",
-            "missions",
-            "next",
-            "faction",
-            "crime",
-            "cartography",
-            "unsold",
-        ]
-    )
+    status_segments: list[str] = field(default_factory=lambda: ["next"])
     #: Show the percentage towards the next superpower rank.
     #:
     #: Off by default is tempting, but the figure is genuine -- it is what the
@@ -486,7 +482,7 @@ class Config:
 
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
-VALID_SEGMENTS = {"carrier", "system", "fss", "bio", "balance"}
+VALID_SEGMENTS = {"carrier", "system", "fss", "bio", "balance", "ship", "cargo", "missions"}
 
 #: Human names for the segments, in the order they appear in a row. Used by the
 #: tray menu so blocks can be hidden without editing the config by hand.
@@ -494,33 +490,35 @@ SEGMENT_NAMES: dict[str, str] = {
     "carrier": "Флотоносец",
     "system": "Система",
     "balance": "Баланс",
+    "ship": "Корабль",
+    "cargo": "Трюм",
+    "missions": "Миссии",
     "fss": "FSS",
     "bio": "Биология",
 }
 STATUS_SEGMENT_NAMES: dict[str, str] = {
+    "next": "Цель прыжка",
     "mode": "Режим игры",
+    "faction": "Фракция",
     "empire": "Империя",
     "federation": "Федерация",
-    "ship": "Корабль",
-    "missions": "Миссии",
-    "next": "Цель прыжка",
-    "faction": "Фракция",
     "crime": "Розыск",
     "cartography": "Картография",
     "unsold": "К зачислению",
 }
 
+#: Segments belonging to the bottom row. Ship and missions moved to the top
+#: row, so they are no longer accepted here: a config that still lists them
+#: there has them dropped with a log line rather than drawn twice.
 VALID_STATUS_SEGMENTS = {
+    "next",
     "mode",
+    "faction",
     "empire",
     "federation",
-    "ship",
-    "missions",
-    "unsold",
-    "next",
-    "faction",
     "crime",
     "cartography",
+    "unsold",
 }
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}

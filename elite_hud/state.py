@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
 from .cartography import CartographyHold, is_sellable_body
 from .crime import CrimeRecord
+from .ships import ShipNames
 from .footfall import BodySurvey, FootfallPolicy
 from .materials import MaterialTable
 from .unsold import UnsoldData
@@ -444,6 +446,8 @@ class GameState:
         material_rarity: bool = True,
         faction_name: str = "",
         faction_match: str = "contains",
+        ship_names: ShipNames | None = None,
+        ship_cache: Path | None = None,
         material_enabled: bool = True,
         material_notify: bool = True,
         rarity_label: str = "Редкость",
@@ -460,6 +464,14 @@ class GameState:
         self.crime = CrimeRecord()
         #: Exploration data carried but not yet sold.
         self.cartography = CartographyHold()
+        #: Ship model names, learned from the journal (see elite_hud/ships.py).
+        self.ship_names = ship_names or ShipNames(ship_cache)
+        #: The model as the game names it, e.g. "Caspian Explorer".
+        self.ship_model = ""
+        #: Cargo rack total, from Loadout.
+        self.cargo_capacity = 0
+        #: Tonnes currently in the hold.
+        self.cargo_count = 0
         #: The faction we are following, in the current system.
         self.faction = FactionStatus(wanted=faction_name)
         self.faction_match = faction_match
@@ -569,6 +581,24 @@ class GameState:
         """Advance state that depends on the clock; call from the UI loop."""
         self.carrier.settle(now)
 
+    # -- ships -------------------------------------------------------------
+
+    def _on_ShipyardSwap(self, event: dict) -> None:
+        if self.ship_names.observe(event):
+            log.debug("learned ship name: %s", self.ship_names.names)
+        # A swap changes the current ship without a Loadout in some cases.
+        symbol = str(event.get("ShipType") or "")
+        if symbol:
+            self.ship_type = symbol
+            self.ship_model = self.ship_names.display(symbol)
+            self.ship = self.ship_model
+
+    def _on_StoredShips(self, event: dict) -> None:
+        self.ship_names.observe(event)
+
+    def _on_ShipyardTransfer(self, event: dict) -> None:
+        self.ship_names.observe(event)
+
     # -- crime -------------------------------------------------------------
 
     def _on_Statistics(self, event: dict) -> None:
@@ -647,6 +677,10 @@ class GameState:
             self.status_live = False
         if snapshot.legal_state:
             self.legal_state = snapshot.legal_state
+        if snapshot.cargo is not None:
+            # Status.json is the live figure; the Cargo event only fires on a
+            # change the game chooses to report.
+            self.cargo_count = max(0, int(snapshot.cargo))
 
     # -- session / location ------------------------------------------------
 
@@ -661,6 +695,7 @@ class GameState:
         )
 
     def _on_LoadGame(self, event: dict) -> None:
+        self.ship_names.observe(event)
         self.commander = str(event.get("Commander") or self.commander)
         mode = str(event.get("GameMode") or "")
         if mode:
@@ -854,10 +889,17 @@ class GameState:
         self.commander = str(event.get("Name") or self.commander)
 
     def _on_Loadout(self, event: dict) -> None:
-        ship = event.get("Ship_Localised") or event.get("Ship")
-        if ship:
-            self.ship = str(ship)
-            self.ship_type = str(ship)
+        self.ship_names.observe(event)
+        symbol = str(event.get("Ship") or "")
+        # The model name, not the commander's own name for the ship and not the
+        # ident: the journal only sometimes carries it, so the learned table
+        # fills the gap.
+        self.ship_type = symbol
+        self.ship = str(event.get("Ship_Localised") or "") or self.ship_names.display(symbol)
+        self.ship_model = self.ship
+        capacity = event.get("CargoCapacity")
+        if isinstance(capacity, int) and not isinstance(capacity, bool):
+            self.cargo_capacity = max(0, capacity)
         self.ship_ident = str(event.get("ShipIdent") or self.ship_ident)
         self.ship_name = str(event.get("ShipName") or self.ship_name)
         mass = event.get("UnladenMass")
@@ -889,9 +931,13 @@ class GameState:
         )
 
     def _on_Cargo(self, event: dict) -> None:
+        # Only the ship's own hold counts; an SRV has its own.
+        vessel = str(event.get("Vessel") or "Ship")
+        if vessel != "Ship":
+            return
         count = event.get("Count")
-        if isinstance(count, int):
-            self.cargo_count = count
+        if isinstance(count, int) and not isinstance(count, bool):
+            self.cargo_count = max(0, count)
             self._recompute_jump_range()
 
     def _on_FuelScoop(self, event: dict) -> None:

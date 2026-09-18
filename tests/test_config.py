@@ -37,7 +37,8 @@ class DefaultsTests(unittest.TestCase):
         self.assertTrue(config.overlay.click_through)
         self.assertTrue(config.overlay.always_on_top)
         self.assertEqual(
-            config.overlay.segments, ["carrier", "system", "balance", "fss", "bio"]
+            config.overlay.segments,
+        ["carrier", "system", "balance", "ship", "cargo", "missions"]
         )
 
     def test_generated_toml_round_trips(self) -> None:

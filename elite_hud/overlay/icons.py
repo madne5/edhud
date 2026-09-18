@@ -76,6 +76,29 @@ def _draw_planet(painter: QPainter, r: QRectF) -> None:
     painter.drawArc(ring, 20 * 16, 140 * 16)
 
 
+def _draw_cargo(painter, rect: QRectF, color: QColor) -> None:
+    """A cargo container: a box with lid lines, for the hold."""
+    pen = QPen(color)
+    pen.setWidthF(max(1.0, rect.width() * 0.09))
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    body = QRectF(
+        rect.left() + rect.width() * 0.14,
+        rect.top() + rect.height() * 0.26,
+        rect.width() * 0.72,
+        rect.height() * 0.52,
+    )
+    painter.drawRect(body)
+    # Two vertical dividers read as a container rather than a plain square.
+    for fraction in (0.38, 0.62):
+        x = body.left() + body.width() * fraction
+        painter.drawLine(
+            QPointF(x, body.top()), QPointF(x, body.bottom())
+        )
+
+
 def _draw_radar(painter: QPainter, r: QRectF) -> None:
     """FSS: a reticle with a sweep."""
     painter.drawEllipse(r.adjusted(r.width() * 0.12, r.height() * 0.12, -r.width() * 0.12, -r.height() * 0.12))
@@ -275,6 +298,7 @@ _DRAWERS = {
     "carrier": _draw_carrier,
     "planet": _draw_planet,
     "radar": _draw_radar,
+    "cargo": _draw_cargo,
     "bio": _draw_bio,
     "star": _draw_star,
     "gem": _draw_gem,
