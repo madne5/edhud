@@ -15,6 +15,7 @@ GLYPHS = (
     "carrier",
     "planet",
     "radar",
+    "cargo",
     "bio",
     "star",
     "gem",
@@ -76,27 +77,28 @@ def _draw_planet(painter: QPainter, r: QRectF) -> None:
     painter.drawArc(ring, 20 * 16, 140 * 16)
 
 
-def _draw_cargo(painter, rect: QRectF, color: QColor) -> None:
-    """A cargo container: a box with lid lines, for the hold."""
-    pen = QPen(color)
-    pen.setWidthF(max(1.0, rect.width() * 0.09))
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
+def _draw_cargo(painter: QPainter, r: QRectF) -> None:
+    """A cargo container: a box with dividers, for the hold.
 
+    Takes the same two arguments as every other glyph here, because draw_glyph
+    calls them all as ``drawer(painter, rect)``. An earlier version of this one
+    also took a colour and re-set the pen itself, which meant every paint raised
+    TypeError from inside paintEvent -- a Qt callback, where PySide6 treats an
+    unhandled exception as fatal, so the HUD drew one frame and the program
+    exited. No test caught it because the HUD tests chose their own rows and none
+    of them included the cargo segment.
+    """
     body = QRectF(
-        rect.left() + rect.width() * 0.14,
-        rect.top() + rect.height() * 0.26,
-        rect.width() * 0.72,
-        rect.height() * 0.52,
+        r.left() + r.width() * 0.14,
+        r.top() + r.height() * 0.26,
+        r.width() * 0.72,
+        r.height() * 0.52,
     )
     painter.drawRect(body)
     # Two vertical dividers read as a container rather than a plain square.
     for fraction in (0.38, 0.62):
         x = body.left() + body.width() * fraction
-        painter.drawLine(
-            QPointF(x, body.top()), QPointF(x, body.bottom())
-        )
+        painter.drawLine(QPointF(x, body.top()), QPointF(x, body.bottom()))
 
 
 def _draw_radar(painter: QPainter, r: QRectF) -> None:

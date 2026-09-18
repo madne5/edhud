@@ -68,10 +68,12 @@ from elite_hud.notifications import Notification
 from elite_hud.state import Alert, Confidence, GameState
 
 
-#: The shipped row defaults, so a helper can tell a config a test has left alone
-#: from one it has deliberately narrowed.
-DEFAULT_TOP = ["carrier", "system", "balance", "ship", "cargo", "missions"]
-DEFAULT_BOTTOM = ["next"]
+#: The shipped row defaults, read from the configuration rather than copied, so
+#: that changing a default cannot silently stop with_segments from recognising an
+#: untouched config. It was copied once and drifted the moment a segment was added
+#: to the bottom row, which quietly disabled the segments of four test classes.
+DEFAULT_TOP = list(Config().overlay.segments)
+DEFAULT_BOTTOM = list(Config().overlay.status_segments)
 
 #: The rows these tests were written against before the bars were reorganised.
 #: The segments themselves are unchanged; where they live is not.
