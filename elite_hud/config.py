@@ -499,6 +499,8 @@ SEGMENT_NAMES: dict[str, str] = {
 STATUS_SEGMENT_NAMES: dict[str, str] = {
     "next": "Цель прыжка",
     "mode": "Режим игры",
+    "ship": "Корабль",
+    "missions": "Миссии",
     "faction": "Фракция",
     "empire": "Империя",
     "federation": "Федерация",
@@ -507,9 +509,10 @@ STATUS_SEGMENT_NAMES: dict[str, str] = {
     "unsold": "К зачислению",
 }
 
-#: Segments belonging to the bottom row. Ship and missions moved to the top
-#: row, so they are no longer accepted here: a config that still lists them
-#: there has them dropped with a log line rather than drawn twice.
+#: Segments accepted in the bottom row. Ship and missions now default to the top
+#: row but are still accepted here: each builder works in either row, and
+#: refusing them would silently drop the segments of an existing config for no
+#: good reason.
 VALID_STATUS_SEGMENTS = {
     "next",
     "mode",
@@ -519,6 +522,8 @@ VALID_STATUS_SEGMENTS = {
     "crime",
     "cartography",
     "unsold",
+    "ship",
+    "missions",
 }
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}

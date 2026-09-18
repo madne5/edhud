@@ -68,6 +68,28 @@ from elite_hud.notifications import Notification
 from elite_hud.state import Alert, Confidence, GameState
 
 
+#: The shipped row defaults, so a helper can tell a config a test has left alone
+#: from one it has deliberately narrowed.
+DEFAULT_TOP = ["carrier", "system", "balance", "ship", "cargo", "missions"]
+DEFAULT_BOTTOM = ["next"]
+
+#: The rows these tests were written against before the bars were reorganised.
+#: The segments themselves are unchanged; where they live is not.
+LEGACY_TOP = ["carrier", "system", "fss", "bio"]
+LEGACY_BOTTOM = ["mode", "empire", "federation", "ship", "missions"]
+
+
+def with_segments(config: Config, *, top=None, bottom=None) -> Config:
+    """Enable the segments a test studies, without disturbing a test that has
+    chosen its own list."""
+    if top and config.overlay.segments == DEFAULT_TOP:
+        config.overlay.segments = list(top)
+    if bottom and config.overlay.status_segments == DEFAULT_BOTTOM:
+        config.overlay.status_segments = list(bottom)
+    config.validate()
+    return config
+
+
 def make_state(config: Config) -> GameState:
     state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
     state.apply({"event": "Fileheader", "Odyssey": True})
@@ -163,6 +185,7 @@ class HudRenderTests(unittest.TestCase):
     ):
         from elite_hud.overlay.hud import HudWindow
 
+        with_segments(config, top=LEGACY_TOP)
         hud = HudWindow(config, state)
         width = self.SCREEN_WIDTH if screen_width is None else screen_width
         hud._available_width = lambda: float(width)  # type: ignore[method-assign]
@@ -635,6 +658,7 @@ class StatusRowTests(unittest.TestCase):
     def _hud(self, config: Config, state: GameState):
         from elite_hud.overlay.hud import HudWindow
 
+        with_segments(config, top=LEGACY_TOP, bottom=LEGACY_BOTTOM)
         hud = HudWindow(config, state)
         hud._available_width = lambda: 2560.0  # noqa: SLF001
         hud.rebuild()
@@ -691,12 +715,23 @@ class StatusRowTests(unittest.TestCase):
         self.assertNotIn("Барон", text)
         self.assertIn("Уорент-офицер", text, "the other ladder is unaffected")
 
-    def test_ship_ident_and_range_are_shown(self) -> None:
+    def test_the_ship_model_and_range_are_shown(self) -> None:
+        """The ident was shown here before; the model is what says what the
+        commander is actually flying."""
         config = Config()
         text = self._status(config, self._state(config))
-        self.assertIn("KSS-14", text)
+        self.assertIn("Explorer NX", text)
+        self.assertNotIn("KSS-14", text)
         self.assertIn("макс: 84 ly", text)
         self.assertIn("тек: 84 ly", text)
+
+    def test_a_learned_ship_name_replaces_the_symbol_fallback(self) -> None:
+        config = Config()
+        state = self._state(config)
+        state.ship_names.learn("explorer_nx", "Caspian Explorer")
+        state.apply({"event": "Loadout", "Ship": "explorer_nx", "ShipIdent": "KSS-14",
+                     "MaxJumpRange": 83.735268})
+        self.assertIn("Caspian Explorer", self._status(config, state))
 
     def test_loading_cargo_lowers_the_current_range(self) -> None:
         """The point of showing two numbers at all."""
@@ -891,6 +926,7 @@ class RowAlignmentTests(unittest.TestCase):
     def _hud(self, config: Config, state: GameState):
         from elite_hud.overlay.hud import HudWindow
 
+        with_segments(config, top=LEGACY_TOP, bottom=LEGACY_BOTTOM)
         hud = HudWindow(config, state)
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
@@ -922,7 +958,7 @@ class RowAlignmentTests(unittest.TestCase):
         self.assertEqual(state.game_mode, "")
         state.ranks["Empire"] = 9
         state.rank_progress["Empire"] = 13
-        state.ship_ident = "KSS-14"
+        state.ship_model = "Explorer NX"
 
         hud = self._hud(config, state)
         status = self._row(hud, "status")
@@ -937,7 +973,7 @@ class RowAlignmentTests(unittest.TestCase):
         config = Config()
         state = make_state(config)
         state.missions_known = False
-        state.ship_ident = "KSS-14"
+        state.ship_model = "Explorer NX"
         hud = self._hud(config, state)
         status = self._row(hud, "status")
         self.assertIsNotNone(status)
@@ -1194,6 +1230,7 @@ class FactionSegmentTests(unittest.TestCase):
     def _hud(self, state, config):
         from elite_hud.overlay.hud import HudWindow
 
+        with_segments(config, top=LEGACY_TOP, bottom=["faction"])
         hud = HudWindow(config, state)
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
@@ -1317,6 +1354,7 @@ class CrimeSegmentTests(unittest.TestCase):
     def _hud(self, state, config):
         from elite_hud.overlay.hud import HudWindow
 
+        with_segments(config, top=LEGACY_TOP, bottom=["crime"])
         hud = HudWindow(config, state)
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
@@ -1392,6 +1430,7 @@ class SuperpowerProgressTests(unittest.TestCase):
     def _hud(self, config, state):
         from elite_hud.overlay.hud import HudWindow
 
+        with_segments(config, bottom=["empire", "federation"])
         hud = HudWindow(config, state)
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
