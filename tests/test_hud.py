@@ -1461,3 +1461,102 @@ class SuperpowerProgressTests(unittest.TestCase):
         self.assertIn("Граф", text)
         self.assertNotIn("13%", text)
         hud.close()
+
+
+@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
+class CarrierSegmentTests(unittest.TestCase):
+    """Both carriers, permanently, in the bottom row."""
+
+    app: "QApplication"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _hud(self, state, config):
+        from elite_hud.overlay.hud import HudWindow
+
+        hud = HudWindow(config, state)
+        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
+        hud.rebuild()
+        return hud
+
+    def _state(self):
+        from elite_hud.state import GameState
+
+        config = Config()
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        for event in (
+            {"event": "CarrierStats", "CarrierID": 3714982656,
+             "CarrierType": "FleetCarrier", "Callsign": "V3G-N1H",
+             "Name": "[KSS0] Yuri Gagarin",
+             "SpaceUsage": {"TotalCapacity": 25000, "Cargo": 7001, "FreeSpace": 5142}},
+            {"event": "CarrierStats", "CarrierID": 3713063168,
+             "CarrierType": "SquadronCarrier", "Callsign": "KSS0",
+             "Name": "Sergey Korolev - mHQ",
+             "SpaceUsage": {"TotalCapacity": 60000, "Cargo": 6089, "FreeSpace": 42951}},
+        ):
+            state.apply(event)
+        return state
+
+    def _carrier_segments(self, hud):
+        status = next((row for row in hud._rows if row.kind == "status"), None)
+        if status is None:
+            return []
+        return [
+            segment
+            for segment in status.segments
+            if any(span.text in ("V3G-N1H", "KSS0") for span in segment.spans)
+        ]
+
+    def test_nothing_is_shown_without_a_carrier(self) -> None:
+        config = Config()
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        hud = self._hud(state, config)
+        self.assertEqual(self._carrier_segments(hud), [])
+        hud.close()
+
+    def test_both_callsigns_and_both_holds_are_shown(self) -> None:
+        config = Config()
+        hud = self._hud(self._state(), config)
+        text = hud.bar_text()
+        self.assertIn("V3G-N1H", text)
+        self.assertIn("KSS0", text)
+        self.assertIn("5142/25000", text)
+        self.assertIn("42951/60000", text)
+        hud.close()
+
+    def test_each_carrier_is_its_own_segment(self) -> None:
+        """Two carriers should read as two entries, not one long line."""
+        config = Config()
+        hud = self._hud(self._state(), config)
+        self.assertEqual(len(self._carrier_segments(hud)), 2)
+        hud.close()
+
+    def test_they_live_in_the_bottom_row(self) -> None:
+        config = Config()
+        hud = self._hud(self._state(), config)
+        top = next(row for row in hud._rows if row.kind == "primary")
+        self.assertFalse(
+            any(span.text == "KSS0" for segment in top.segments for span in segment.spans)
+        )
+        hud.close()
+
+    def test_the_segment_can_be_switched_off(self) -> None:
+        config = Config()
+        config.overlay.status_segments = []
+        hud = self._hud(self._state(), config)
+        self.assertEqual(self._carrier_segments(hud), [])
+        self.assertNotIn("KSS0", hud.bar_text())
+        hud.close()
+
+    def test_an_unnamed_carrier_is_not_shown(self) -> None:
+        """CarrierLocation alone gives an identifier but no callsign."""
+        config = Config()
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state.apply(
+            {"event": "CarrierLocation", "CarrierID": 1234, "CarrierType": "FleetCarrier"}
+        )
+        hud = self._hud(state, config)
+        self.assertNotIn("1234", hud.bar_text())
+        hud.close()

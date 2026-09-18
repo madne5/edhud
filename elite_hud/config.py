@@ -75,6 +75,8 @@ class LabelConfig:
     cartography: str = "картография"
     #: tonnes, for the cargo hold
     tonnes: str = "т"
+    #: free hold space on a carrier: "KSS0 своб. 42951/60000 т"
+    carrier_free: str = "своб."
     #: units for the cartography counts
     systems_short: str = "сист."
     bodies_short: str = "тел"
@@ -132,7 +134,9 @@ class OverlayConfig:
     #: Segments in the always-visible second row.
     #: Available: mode, empire, federation, ship, missions, unsold, next,
     #: faction, crime.
-    status_segments: list[str] = field(default_factory=lambda: ["next"])
+    status_segments: list[str] = field(
+        default_factory=lambda: ["next", "carriers"]
+    )
     #: Show the percentage towards the next superpower rank.
     #:
     #: Off by default is tempting, but the figure is genuine -- it is what the
@@ -507,6 +511,7 @@ STATUS_SEGMENT_NAMES: dict[str, str] = {
     "crime": "Розыск",
     "cartography": "Картография",
     "unsold": "К зачислению",
+    "carriers": "Флотоносцы",
 }
 
 #: Segments accepted in the bottom row. Ship and missions now default to the top
@@ -524,6 +529,7 @@ VALID_STATUS_SEGMENTS = {
     "unsold",
     "ship",
     "missions",
+    "carriers",
 }
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}

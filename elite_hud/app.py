@@ -24,6 +24,7 @@ from .config import (
     ensure_config_file,
     resolve_config_path,
     set_config_list,
+    user_config_dir,
     toggle_segment,
     set_config_value,
     set_update_mode,
@@ -285,6 +286,12 @@ class HudApp:
                 min_bio_signals=config.footfall.min_bio_signals,
             ),
             footfall_label=config.overlay.labels.footfall_first,
+            # Learned names and carrier details are cached beside the config:
+            # without a path they would be relearned every launch, and a
+            # commander who flies one ship or checks one carrier rarely would
+            # never see either named.
+            ship_cache=user_config_dir() / "ships.json",
+            carrier_cache=user_config_dir() / "carriers.json",
             faction_name=config.faction.name,
             faction_match=config.faction.match,
             material_rarity=config.materials.rarity,

@@ -423,6 +423,10 @@ class HudWindow(QWidget):
                 segment = self._unsold_segment(0.0)
             elif name == "next":
                 segment = self._next_segment(0.0)
+            elif name == "carriers":
+                # One segment per carrier, so two of them read as two entries
+                # rather than one long line.
+                segments.extend(self._carrier_segments())
             elif name == "faction":
                 segment = self._faction_segment(0.0)
             elif name == "crime":
@@ -604,6 +608,42 @@ class HudWindow(QWidget):
             glyph_color=colour,
             lead=lead,
         )
+
+    def _carrier_segments(self) -> list[Segment]:
+        """Every carrier the commander has: callsign and free hold space.
+
+        Free space is the game's own ``FreeSpace``, not the capacity minus the
+        cargo: those two do not agree -- one carrier in the journals reports
+        25000 total, 7001 cargo and 5142 free, leaving 12857 unaccounted for --
+        so nothing is derived by subtraction here.
+        """
+        infos = self.state.carriers.known()
+        if not infos:
+            return []
+        cfg = self.config.overlay
+        out: list[Segment] = []
+        for info in infos:
+            free, total = info.hold()
+            # A squadron carrier is not the commander's own, so it reads dimmer.
+            colour = cfg.foreground if info.squadron else cfg.accent
+            spans = [Span(info.callsign, color=colour, bold=True)]
+            if total:
+                spans.append(
+                    Span(f" {cfg.labels.carrier_free} ", color=cfg.foreground, dim=0.7)
+                )
+                spans.append(Span(f"{free}/{total}", color=colour))
+                spans.append(
+                    Span(f" {cfg.labels.tonnes}", color=cfg.foreground, dim=0.7)
+                )
+            out.append(
+                Segment(
+                    glyph="carrier" if cfg.show_glyphs else None,
+                    spans=spans,
+                    glyph_color=colour,
+                    lead=0.0,
+                )
+            )
+        return out
 
     def _next_segment(self, lead: float) -> Segment | None:
         """Where the commander is heading: current system is already shown."""

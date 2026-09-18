@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import jump_range, ranks
 from .exobiology import Confidence, ExobiologyTable, Genus, Species
+from .carriers import CarrierBook
 from .cartography import CartographyHold, is_sellable_body
 from .crime import CrimeRecord
 from .ships import ShipNames
@@ -448,6 +449,8 @@ class GameState:
         faction_match: str = "contains",
         ship_names: ShipNames | None = None,
         ship_cache: Path | None = None,
+        carrier_book: CarrierBook | None = None,
+        carrier_cache: Path | None = None,
         material_enabled: bool = True,
         material_notify: bool = True,
         rarity_label: str = "Редкость",
@@ -465,7 +468,15 @@ class GameState:
         #: Exploration data carried but not yet sold.
         self.cartography = CartographyHold()
         #: Ship model names, learned from the journal (see elite_hud/ships.py).
-        self.ship_names = ship_names or ShipNames(ship_cache)
+        self.ship_names = (
+            ship_names if ship_names is not None else ShipNames(ship_cache)
+        )
+        #: Fleet carriers, learned and cached (see elite_hud/carriers.py).
+        self.carriers = (
+            carrier_book
+            if carrier_book is not None
+            else CarrierBook(cache_path=carrier_cache)
+        )
         #: The model as the game names it, e.g. "Caspian Explorer".
         self.ship_model = ""
         #: Cargo rack total, from Loadout.
@@ -480,7 +491,13 @@ class GameState:
         #: True while the status file is the source of the balance.
         self.status_live = False
         #: Rarity and canonical names; the journal supplies localised names.
-        self.material_table = material_table or MaterialTable()
+        # `is not None`, not `or`: these objects define __len__, so an empty one
+        # is falsy and would be silently replaced -- which is how a CarrierBook
+        # built with a cache path was discarded in favour of one without, and
+        # nothing was ever written.
+        self.material_table = (
+            material_table if material_table is not None else MaterialTable()
+        )
         #: Journal symbol (lowercase) -> how many are held.
         self.holdings: dict[str, int] = {}
         #: A Materials event has been seen, so the hold is known rather than assumed.
@@ -1051,6 +1068,7 @@ class GameState:
         return None
 
     def _on_CarrierLocation(self, event: dict) -> None:
+        self.carriers.observe(event)
         """Reports where the carrier is: at startup, and near an arrival.
 
         Deliberately NOT treated as a jump. It also fires on login, where the
@@ -1466,9 +1484,13 @@ class GameState:
     # -- fleet carrier -----------------------------------------------------
 
     def _on_CarrierStats(self, event: dict) -> None:
+        self.carriers.observe(event)
         self.carrier.carrier_id = int(event.get("CarrierID") or self.carrier.carrier_id or 0)
         self.carrier.callsign = str(event.get("Callsign") or self.carrier.callsign)
         self.carrier.name = str(event.get("Name") or self.carrier.name)
+
+    def _on_CarrierFinance(self, event: dict) -> None:
+        self.carriers.observe(event)
 
     def _on_CarrierJumpRequest(self, event: dict) -> None:
         self.carrier.carrier_id = int(event.get("CarrierID") or self.carrier.carrier_id or 0)
