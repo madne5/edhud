@@ -624,8 +624,16 @@ class HudWindow(QWidget):
         out: list[Segment] = []
         for info in infos:
             free, total = info.hold()
-            # A squadron carrier is not the commander's own, so it reads dimmer.
+            # A squadron carrier is not the commander's own, so its callsign
+            # reads dimmer. The icon carries a different fact: whether anyone
+            # may dock, green for open and orange for restricted.
             colour = cfg.foreground if info.squadron else cfg.accent
+            role = info.access_role()
+            glyph_colour = (
+                cfg.success if role == "success"
+                else cfg.warning if role == "warning"
+                else colour
+            )
             spans = [Span(info.callsign, color=colour, bold=True)]
             if total:
                 spans.append(
@@ -639,7 +647,7 @@ class HudWindow(QWidget):
                 Segment(
                     glyph="carrier" if cfg.show_glyphs else None,
                     spans=spans,
-                    glyph_color=colour,
+                    glyph_color=glyph_colour,
                     lead=0.0,
                 )
             )

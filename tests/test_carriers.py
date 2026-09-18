@@ -181,6 +181,70 @@ class CarrierStateTests(unittest.TestCase):
         self.assertEqual(info.hold(), (5142, 25000))
 
 
+class DockingAccessTests(unittest.TestCase):
+    """The icon colour encodes who may dock, so the mapping must be explicit.
+
+    The documented values are all | none | friends | squadron | squadronfriends.
+    Both of the journals' carriers are covered by them: KSS0 is "all" and
+    V3G-N1H is "squadronfriends".
+    """
+
+    def _role(self, access: str) -> str:
+        return CarrierInfo(carrier_id=1, docking_access=access).access_role()
+
+    def test_open_to_everyone_is_green(self) -> None:
+        self.assertEqual(self._role("all"), "success")
+
+    def test_friends_is_orange(self) -> None:
+        self.assertEqual(self._role("friends"), "warning")
+
+    def test_squadron_only_is_orange(self) -> None:
+        self.assertEqual(self._role("squadron"), "warning")
+
+    def test_friends_and_squadron_is_orange(self) -> None:
+        self.assertEqual(self._role("squadronfriends"), "warning")
+
+    def test_closed_to_everyone_counts_as_restricted(self) -> None:
+        """Grouped with the restricted values rather than given its own colour:
+        it is still not open to all."""
+        self.assertEqual(self._role("none"), "warning")
+
+    def test_an_unknown_value_is_treated_as_restricted(self) -> None:
+        """Failing safe: claiming "open to all" for a value we do not know
+        would be the one wrong answer that matters."""
+        self.assertEqual(self._role("somethingnew"), "warning")
+
+    def test_an_unseen_carrier_claims_nothing(self) -> None:
+        self.assertEqual(self._role(""), "")
+
+    def test_the_access_is_read_from_carrier_stats(self) -> None:
+        book = CarrierBook()
+        book.observe(dict(PERSONAL, DockingAccess="squadronfriends"))
+        self.assertEqual(book.info(3714982656).docking_access, "squadronfriends")
+        self.assertEqual(book.info(3714982656).access_role(), "warning")
+
+    def test_the_access_is_case_folded(self) -> None:
+        book = CarrierBook()
+        book.observe(dict(SQUADRON, DockingAccess="ALL"))
+        self.assertEqual(book.info(3713063168).access_role(), "success")
+
+    def test_the_access_survives_a_restart(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "carriers.json"
+        book = CarrierBook(cache_path=path)
+        book.observe(dict(SQUADRON, DockingAccess="all"))
+        reopened = CarrierBook(cache_path=path)
+        self.assertEqual(reopened.info(3713063168).docking_access, "all")
+        self.assertEqual(reopened.info(3713063168).access_role(), "success")
+
+    def test_a_location_does_not_clear_the_access(self) -> None:
+        """CarrierLocation carries no DockingAccess, and must not erase it."""
+        book = CarrierBook()
+        book.observe(dict(SQUADRON, DockingAccess="all"))
+        book.observe({"event": "CarrierLocation", "CarrierID": 3713063168,
+                      "CarrierType": "SquadronCarrier", "StarSystem": "Sol"})
+        self.assertEqual(book.info(3713063168).access_role(), "success")
+
+
 class CarrierInfoTests(unittest.TestCase):
     def test_label_falls_back_to_the_identifier(self) -> None:
         self.assertEqual(CarrierInfo(carrier_id=7).label, "7")

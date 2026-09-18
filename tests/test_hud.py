@@ -1491,24 +1491,30 @@ class CarrierSegmentTests(unittest.TestCase):
         for event in (
             {"event": "CarrierStats", "CarrierID": 3714982656,
              "CarrierType": "FleetCarrier", "Callsign": "V3G-N1H",
-             "Name": "[KSS0] Yuri Gagarin",
+             "Name": "[KSS0] Yuri Gagarin", "DockingAccess": "squadronfriends",
              "SpaceUsage": {"TotalCapacity": 25000, "Cargo": 7001, "FreeSpace": 5142}},
             {"event": "CarrierStats", "CarrierID": 3713063168,
              "CarrierType": "SquadronCarrier", "Callsign": "KSS0",
-             "Name": "Sergey Korolev - mHQ",
+             "Name": "Sergey Korolev - mHQ", "DockingAccess": "all",
              "SpaceUsage": {"TotalCapacity": 60000, "Cargo": 6089, "FreeSpace": 42951}},
         ):
             state.apply(event)
         return state
 
     def _carrier_segments(self, hud):
+        """Carrier segments, found by their label rather than by callsign.
+
+        Matching hardcoded callsigns made the helper useless for any other
+        carrier, which is exactly what the unknown-access test needed.
+        """
         status = next((row for row in hud._rows if row.kind == "status"), None)
         if status is None:
             return []
+        label = hud.config.overlay.labels.carrier_free
         return [
             segment
             for segment in status.segments
-            if any(span.text in ("V3G-N1H", "KSS0") for span in segment.spans)
+            if any(span.text == label for span in segment.spans)
         ]
 
     def test_nothing_is_shown_without_a_carrier(self) -> None:
@@ -1550,6 +1556,53 @@ class CarrierSegmentTests(unittest.TestCase):
         hud = self._hud(self._state(), config)
         self.assertEqual(self._carrier_segments(hud), [])
         self.assertNotIn("KSS0", hud.bar_text())
+        hud.close()
+
+    def _segment_for(self, hud, callsign: str):
+        return next(
+            segment
+            for segment in self._carrier_segments(hud)
+            if any(span.text == callsign for span in segment.spans)
+        )
+
+    def test_the_helper_finds_carriers_by_label_not_callsign(self) -> None:
+        """A guard on the tests themselves: the previous helper only matched the
+        two callsigns in the fixture."""
+        config = Config()
+        hud = self._hud(self._state(), config)
+        self.assertEqual(len(self._carrier_segments(hud)), 2)
+        hud.close()
+
+    def test_an_open_carrier_has_a_green_icon(self) -> None:
+        """KSS0 is open to everyone in the journals."""
+        config = Config()
+        hud = self._hud(self._state(), config)
+        self.assertEqual(
+            self._segment_for(hud, "KSS0").glyph_color, config.overlay.success
+        )
+        hud.close()
+
+    def test_a_restricted_carrier_has_an_orange_icon(self) -> None:
+        """V3G-N1H is squadron-and-friends only."""
+        config = Config()
+        hud = self._hud(self._state(), config)
+        self.assertEqual(
+            self._segment_for(hud, "V3G-N1H").glyph_color, config.overlay.warning
+        )
+        hud.close()
+
+    def test_a_carrier_whose_access_is_unknown_keeps_the_row_colour(self) -> None:
+        """CarrierStats may not have been seen, and the icon must not then
+        claim an access level nobody reported."""
+        config = Config()
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state.apply(
+            {"event": "CarrierStats", "CarrierID": 7, "CarrierType": "FleetCarrier",
+             "Callsign": "ABC-123", "SpaceUsage": {"TotalCapacity": 100, "FreeSpace": 50}}
+        )
+        hud = self._hud(state, config)
+        glyph = self._segment_for(hud, "ABC-123").glyph_color
+        self.assertNotIn(glyph, (config.overlay.success, config.overlay.warning))
         hud.close()
 
     def test_an_unnamed_carrier_is_not_shown(self) -> None:

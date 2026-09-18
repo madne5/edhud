@@ -51,6 +51,9 @@ class CarrierInfo:
     free_space: int = 0
     crew: int = 0
     fuel: int = 0
+    #: "all" | "friends" | "squadron" | "squadronfriends" | "none", as the game
+    #: spells it, or "" when CarrierStats has not been seen.
+    docking_access: str = ""
     balance: int | None = None
     reserve: int | None = None
 
@@ -71,6 +74,22 @@ class CarrierInfo:
     def hold(self) -> tuple[int, int]:
         """(free, total) as the game reports them, or (0, 0) when unknown."""
         return (self.free_space, self.total_capacity)
+
+    def access_role(self) -> str:
+        """Which palette role the carrier's icon should use.
+
+        Green where anyone may dock, orange where docking is limited to friends,
+        the squadron, or both. ``none`` -- nobody may dock -- is grouped with the
+        restricted values rather than given a colour of its own, because it is
+        still "not open to all"; it can be split out if that reads wrong.
+
+        An empty string means CarrierStats has not been seen, so the icon keeps
+        whatever colour the row would otherwise give it rather than claiming an
+        access level that is not known.
+        """
+        if not self.docking_access:
+            return ""
+        return "success" if self.docking_access == "all" else "warning"
 
 
 @dataclass(slots=True)
@@ -105,7 +124,7 @@ class CarrierBook:
                 continue
             info = CarrierInfo(carrier_id=carrier_id)
             for name in (
-                "callsign", "name", "kind", "system",
+                "callsign", "name", "kind", "system", "docking_access",
             ):
                 text = value.get(name)
                 if isinstance(text, str):
@@ -173,6 +192,9 @@ class CarrierBook:
             info.name = str(event.get("Name") or info.name)
             info.kind = str(event.get("CarrierType") or info.kind)
             info.fuel = self._int_or(event.get("FuelLevel"), info.fuel)
+            access = event.get("DockingAccess")
+            if isinstance(access, str) and access:
+                info.docking_access = access.casefold()
             usage = event.get("SpaceUsage")
             if isinstance(usage, dict):
                 info.cargo = self._int_or(usage.get("Cargo"), info.cargo)

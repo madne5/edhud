@@ -120,6 +120,9 @@ class OverlayConfig:
     accent: str = "#ff9d2e"
     danger: str = "#ff5555"
     success: str = "#5ee08a"
+    #: Restricted, but not an error: a carrier whose docking is limited.
+    #: Separate from accent so the meaning can be changed on its own.
+    warning: str = "#ff9d2e"
     #: Segments shown in the bar, in order. Available: carrier, system, fss, bio.
     segments: list[str] = field(
         default_factory=lambda: [
