@@ -207,11 +207,13 @@ class ShoppingConfig:
     """The shopping popup, shown while the galaxy map is open.
 
     It answers "where do I buy the twenty things my missions want", which needs a
-    market database rather than the journal, so it is off until the commander
-    turns it on: it makes network requests on their behalf.
+    market database rather than the journal. On by default, because it does
+    nothing until the galaxy map is opened *and* there is cargo to buy, so the
+    requests it makes are few and are entirely in service of what the commander
+    is looking at; ``enabled = false`` turns it off.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     #: Smallest landing pad the buying station must have: S, M or L.
     min_pad: str = "L"
     #: How many stations to offer per commodity.

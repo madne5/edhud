@@ -360,9 +360,17 @@ class StateShoppingTests(unittest.TestCase):
 
 
 class ShoppingConfigTests(unittest.TestCase):
-    def test_it_is_off_by_default(self) -> None:
-        """It makes network requests on the commander's behalf."""
-        self.assertFalse(Config().shopping.enabled)
+    def test_it_is_on_by_default(self) -> None:
+        """It does nothing until the galaxy map is open and there is cargo to
+        buy, so the requests it makes are few and serve what is on screen.
+        It was shipped off, and the commander opened the map and saw nothing."""
+        self.assertTrue(Config().shopping.enabled)
+
+    def test_it_can_be_turned_off(self) -> None:
+        config = Config()
+        config.shopping.enabled = False
+        config.validate()
+        self.assertFalse(config.shopping.enabled)
 
     def test_the_pad_requirement_defaults_to_large(self) -> None:
         self.assertEqual(Config().shopping.min_pad, "L")

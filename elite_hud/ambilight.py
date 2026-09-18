@@ -39,6 +39,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -223,11 +224,43 @@ class FeelinLightDriver(LightDriver):
         self._lock = threading.Lock()
         self._connect(discover_seconds)
 
+    @staticmethod
+    def vendor_paths() -> list[Path]:
+        """Where the vendor's library is looked for.
+
+        It cannot be bundled: it is obfuscated, it brings a Windows-only runtime,
+        and it is not ours to redistribute. So the commander drops the
+        ``FeelinLight`` folder next to the program, and those directories are put
+        on the import path, because a frozen build does not have the executable's
+        own directory there.
+        """
+        import sys
+
+        candidates: list[Path] = []
+        if getattr(sys, "frozen", False):
+            base = Path(sys.executable).resolve().parent
+            candidates += [base, base / "vendor", base / "lib"]
+        else:
+            base = Path(__file__).resolve().parent.parent
+            candidates += [base, base / "vendor"]
+        return candidates
+
     def _connect(self, discover_seconds: float) -> None:
+        import sys
+
+        for candidate in self.vendor_paths():
+            if candidate.is_dir() and str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
         try:
             from FeelinLight import feelinlight  # type: ignore[import-not-found]
         except Exception as exc:
-            log.warning("ambilight: FeelinLight library unavailable (%s)", exc)
+            log.warning(
+                "ambilight: the FeelinLight library could not be imported (%s). "
+                "Put its FeelinLight folder next to the program, with "
+                "pyarmor_runtime_000000 inside it, and install numpy, requests "
+                "and zeroconf.",
+                exc,
+            )
             return
         try:
             robot = feelinlight("robot")
@@ -237,10 +270,19 @@ class FeelinLightDriver(LightDriver):
                 # Discovery prints what it finds; whether it also fills ip_list
                 # is not documented, and the source is obfuscated, so the
                 # configured addresses remain the reliable route.
+                log.info("ambilight: no address configured, discovering for %ss", discover_seconds)
                 robot.find_devices(discover_seconds)
             self._robot = robot
             self.available = True
-            log.info("ambilight: lamp ready (%s)", ", ".join(self.ips) or "discovered")
+            if self.ips:
+                log.info("ambilight: lamp ready on %s", ", ".join(self.ips))
+            else:
+                # Saying so matters: without an address the sends go nowhere and
+                # the lamp simply stays dark, with no other clue as to why.
+                log.warning(
+                    "ambilight: no lamp address configured in ambilight.ips, so "
+                    "nothing will be sent unless discovery filled it in"
+                )
         except Exception:
             log.exception("ambilight: could not initialise the lamp")
 

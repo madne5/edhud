@@ -350,6 +350,7 @@ class HudApp:
         )
         self._update_actions: dict[str, object] = {}
         self._faction_actions: dict[str, object] = {}
+        self._feature_actions: dict[str, object] = {}
         self.ambilight: AmbilightService | None = None
         self._seen_balance_changes = 0
         self.shopping_window = None
@@ -358,6 +359,9 @@ class HudApp:
         self._shopping_thread: threading.Thread | None = None
         self._shopping_map_open = False
         self._shopping_at = 0.0
+        #: Set when an optional feature has thrown; it is then left alone for
+        #: the rest of the session rather than retried every tick.
+        self._feature_faults: set[str] = set()
         self._monitor_group = None
         self._update_mode_group = None
         self._quit_after_update = False
@@ -384,6 +388,21 @@ class HudApp:
         log.info("reading live status from %s", self.status_reader.path)
 
     # -- ambilight ---------------------------------------------------------
+
+    def _report_features(self) -> None:
+        """One log line per optional feature, so the log answers 'why not'."""
+        shopping = self.config.shopping
+        log.info(
+            "shopping: %s (opens on the galaxy map; minimum pad %s)",
+            "on" if shopping.enabled else "off",
+            shopping.min_pad,
+        )
+        ambilight = self.config.ambilight
+        log.info(
+            "ambilight: %s%s",
+            "on" if ambilight.enabled else "off",
+            "" if ambilight.enabled else " (needs a lamp, its library and ambilight.ips)",
+        )
 
     def _start_ambilight(self) -> None:
         """Begin driving the lamp, if one is configured.
@@ -424,6 +443,27 @@ class HudApp:
         self.ambilight = None
         if service is not None:
             service.stop()
+        else:
+            self._seen_balance_changes = self.state.balance_changes
+
+    def _pump_feature(self, name: str, pump) -> None:
+        """Run an optional feature's per-tick work, surviving anything it does.
+
+        An exception raised here arrives through a Qt timer slot, and PySide6
+        treats an unhandled exception in a callback as fatal: the overlay would
+        exit. These features are decoration on top of the HUD, so a fault in one
+        disables that one, logs once, and leaves the rest running.
+        """
+        if name in self._feature_faults:
+            return
+        try:
+            pump()
+        except Exception:
+            self._feature_faults.add(name)
+            log.exception("%s: disabled after an error", name)
+            if name == "shopping" and self.shopping_window is not None:
+                self.shopping_window.hide()
+                self.shopping_window = None
 
     def _pump_shopping(self) -> None:
         """Show the shopping popup while the galaxy map is open.
@@ -447,7 +487,12 @@ class HudApp:
             if self.shopping_window is None:
                 from .overlay.shopping_window import ShoppingWindow
 
-                self.shopping_window = ShoppingWindow(cfg)
+                # The whole config, not the section: the window reads the
+                # overlay palette for its colours, and passing the section
+                # raised AttributeError from inside its constructor -- which,
+                # arriving through a Qt timer slot, took the overlay down with
+                # it rather than merely failing to appear.
+                self.shopping_window = ShoppingWindow(self.config)
             self._shopping_map_open = True
             self._refresh_shopping(force=True)
             self.shopping_window.show_for_map()
@@ -660,8 +705,8 @@ class HudApp:
         # Advance anything that depends on the clock before drawing.
         self.state.settle()
         self._poll_status()
-        self._pump_ambilight()
-        self._pump_shopping()
+        self._pump_feature("ambilight", self._pump_ambilight)
+        self._pump_feature("shopping", self._pump_shopping)
         self._drain()
         self._drain_updates()
         if self._pending_sound:
@@ -722,6 +767,7 @@ class HudApp:
         log.info("watching %s", directory)
         self._start_status_reader(directory)
         self._start_ambilight()
+        self._report_features()
         self.watcher = JournalWatcher(
             directory,
             self._on_journal_event,
@@ -770,6 +816,7 @@ class HudApp:
         menu.addAction("Показать / скрыть HUD", self._toggle_hud)
         menu.addAction("Открыть config.toml", self._open_config)
         menu.addSeparator()
+        self._build_feature_menu(menu)
         self._build_faction_menu(menu)
         self._build_segment_menus(menu)
         menu.addSeparator()
@@ -782,6 +829,71 @@ class HudApp:
         tray.setContextMenu(menu)
         tray.show()
         self.tray = tray
+
+    def _build_feature_menu(self, menu) -> None:
+        """Switch the optional features on and off, without editing a file."""
+        submenu = menu.addMenu("Дополнения")
+
+        ambilight = submenu.addAction("Подсветка (Ambilight)")
+        ambilight.setCheckable(True)
+        ambilight.setChecked(self.config.ambilight.enabled)
+        ambilight.triggered.connect(
+            lambda checked=False, a=ambilight: self._set_feature("ambilight", checked, a)
+        )
+        self._feature_actions["ambilight"] = ambilight
+
+        shopping = submenu.addAction("Окно закупки на карте")
+        shopping.setCheckable(True)
+        shopping.setChecked(self.config.shopping.enabled)
+        shopping.triggered.connect(
+            lambda checked=False, a=shopping: self._set_feature("shopping", checked, a)
+        )
+        self._feature_actions["shopping"] = shopping
+
+        status = submenu.addAction("")
+        status.setEnabled(False)
+        self._feature_actions["status"] = status
+        self._describe_features()
+
+    def _describe_features(self) -> None:
+        """Say in the menu what is missing, rather than only in the log."""
+        action = self._feature_actions.get("status")
+        if action is None:
+            return
+        notes: list[str] = []
+        if self.config.ambilight.enabled:
+            if self.ambilight is None or not getattr(self.ambilight.driver, "available", False):
+                notes.append("подсветка: лампа не найдена")
+        if self.config.shopping.enabled:
+            notes.append("закупка: откроется на карте")
+        action.setText(" · ".join(notes) or "всё выключено")
+
+    def _set_feature(self, name: str, enabled: bool, action) -> None:
+        """Apply an optional feature's switch immediately and remember it."""
+        if name == "ambilight":
+            self.config.ambilight.enabled = enabled
+            if enabled:
+                self._start_ambilight()
+            else:
+                self.stop_ambilight()
+        else:
+            self.config.shopping.enabled = enabled
+            if not enabled and self.shopping_window is not None:
+                self.shopping_window.hide()
+                self._shopping_map_open = False
+        self._feature_faults.discard(name)
+
+        persisted = set_config_value(
+            default_config_path(self.options.config), name, "enabled",
+            "true" if enabled else "false",
+        )
+        action.setChecked(enabled)
+        note = "" if persisted else " (не сохранилось в config.toml)"
+        log.info("%s %s%s", name, "enabled" if enabled else "disabled", note)
+        self._describe_features()
+        if self.tray is not None:
+            state = "включено" if enabled else "выключено"
+            self.tray.showMessage("elite-hud", f"{name}: {state}{note}")
 
     def _build_faction_menu(self, menu) -> None:
         """Ask for a faction to follow, rather than making anyone edit a file."""
