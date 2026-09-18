@@ -106,34 +106,34 @@ class EveryGlyphTests(unittest.TestCase):
         self.app = QApplication.instance() or QApplication([])
 
     def test_every_registered_glyph_draws_without_raising(self) -> None:
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPainter, QPixmap
 
         from elite_hud.overlay.icons import _DRAWERS, draw_glyph
 
         # The registry, not the public list: iterating GLYPHS is how a glyph
-        # that was registered but unlisted went unpainted by every test.
+        # that was registered but unlisted went unpainted by every test. A
+        # QPixmap target matches the glyph tests that already existed, which is
+        # the idiom known to work on both runners.
         for name in sorted(_DRAWERS):
             with self.subTest(glyph=name):
-                image = QImage(32, 32, QImage.Format.Format_ARGB32)
-                image.fill(0)
-                painter = QPainter(image)
-                try:
-                    draw_glyph(painter, 4.0, 4.0, 24.0, name, QColor("#ffffff"))
-                finally:
-                    painter.end()
+                pixmap = QPixmap(48, 48)
+                pixmap.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pixmap)
+                draw_glyph(painter, 2, 2, 44, name, QColor("#ffffff"))
+                painter.end()
 
     def test_an_unknown_glyph_is_ignored_rather_than_fatal(self) -> None:
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QPainter, QPixmap
 
         from elite_hud.overlay.icons import draw_glyph
 
-        image = QImage(32, 32, QImage.Format.Format_ARGB32)
-        image.fill(0)
-        painter = QPainter(image)
-        try:
-            draw_glyph(painter, 4.0, 4.0, 24.0, "not-a-glyph", QColor("#ffffff"))
-        finally:
-            painter.end()
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        draw_glyph(painter, 0, 0, 16, "not-a-glyph", QColor("#ffffff"))
+        painter.end()
 
 
 @unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
@@ -208,9 +208,12 @@ class EverySegmentTests(unittest.TestCase):
         hud.close()
 
     def test_every_segment_paints_without_raising(self) -> None:
-        """The actual paint call, which is where the crash happened."""
-        from PySide6.QtGui import QImage, QPainter
+        """The actual paint call, which is where the crash happened.
 
+        Grabbed rather than rendered through a QPainter: that is the idiom the
+        other HUD tests use, and render() into a hand-made device is what failed
+        on the Linux runner while passing on macOS.
+        """
         from elite_hud.overlay.hud import HudWindow
 
         config = Config()
@@ -220,20 +223,12 @@ class EverySegmentTests(unittest.TestCase):
         hud = HudWindow(config, state)
         hud._available_width = lambda: 4096.0  # type: ignore[method-assign]
         hud.rebuild()
-
-        image = QImage(hud.size(), QImage.Format.Format_ARGB32)
-        image.fill(0)
-        painter = QPainter(image)
-        try:
-            hud.render(painter)
-        finally:
-            painter.end()
+        image = hud.grab().toImage()
+        self.assertGreater(image.width(), 50)
         hud.close()
 
     def test_the_shipped_defaults_paint_without_raising(self) -> None:
         """What a fresh install actually shows, painted for real."""
-        from PySide6.QtGui import QImage, QPainter
-
         from elite_hud.overlay.hud import HudWindow
 
         config = Config()
@@ -244,14 +239,8 @@ class EverySegmentTests(unittest.TestCase):
         # The cargo segment is in the shipped defaults, and it was the one that
         # was broken while no test drew it.
         self.assertIn("cargo", config.overlay.segments)
-
-        image = QImage(hud.size(), QImage.Format.Format_ARGB32)
-        image.fill(0)
-        painter = QPainter(image)
-        try:
-            hud.render(painter)
-        finally:
-            painter.end()
+        image = hud.grab().toImage()
+        self.assertGreater(image.width(), 50)
         hud.close()
 
 
