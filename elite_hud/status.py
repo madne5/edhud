@@ -36,6 +36,11 @@ FLAG_DOCKED = 1 << 0
 FLAG_LANDED = 1 << 1
 FLAG_SHIELDS_UP = 1 << 3
 FLAG_SUPERCRUISE = 1 << 4
+FLAG_HARDPOINTS = 1 << 6
+FLAG_FSD_CHARGING = 1 << 17
+FLAG_FSD_COOLDOWN = 1 << 18
+FLAG_IN_DANGER = 1 << 22
+FLAG_BEING_INTERDICTED = 1 << 23
 FLAG_JUMPING = 1 << 30
 
 
@@ -61,6 +66,22 @@ class StatusSnapshot:
     @property
     def landed(self) -> bool:
         return bool(self.flags & FLAG_LANDED)
+
+    @property
+    def fsd_charging(self) -> bool:
+        return bool(self.flags & FLAG_FSD_CHARGING)
+
+    @property
+    def being_interdicted(self) -> bool:
+        return bool(self.flags & FLAG_BEING_INTERDICTED)
+
+    @property
+    def in_danger(self) -> bool:
+        return bool(self.flags & FLAG_IN_DANGER)
+
+    @property
+    def hardpoints_deployed(self) -> bool:
+        return bool(self.flags & FLAG_HARDPOINTS)
 
     @property
     def wanted(self) -> bool:

@@ -15,6 +15,13 @@ from pathlib import Path
 
 from . import __version__
 from .alerts import SoundPlayer
+from .ambilight import (
+    AmbilightService,
+    AmbilightShow,
+    FeelinLightDriver,
+    NullDriver,
+    Situation,
+)
 from .config import (
     CONFIG_FILENAME,
     SEGMENT_NAMES,
@@ -40,6 +47,17 @@ from .status import StatusReader
 from .update_service import UpdateEvent, UpdateService
 
 log = logging.getLogger("elite_hud")
+
+
+def _rgb(values, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    """A configured colour as an RGB triple, falling back when it is unusable."""
+    try:
+        parts = [max(0, min(255, int(v))) for v in values]
+    except (TypeError, ValueError):
+        return fallback
+    if len(parts) != 3:
+        return fallback
+    return parts[0], parts[1], parts[2]
 
 
 def qt_text(text: str) -> str:
@@ -325,6 +343,8 @@ class HudApp:
         )
         self._update_actions: dict[str, object] = {}
         self._faction_actions: dict[str, object] = {}
+        self.ambilight: AmbilightService | None = None
+        self._seen_balance_changes = 0
         self._monitor_group = None
         self._update_mode_group = None
         self._quit_after_update = False
@@ -349,6 +369,67 @@ class HudApp:
             return
         self.status_reader = StatusReader.beside(Path(journal_dir))
         log.info("reading live status from %s", self.status_reader.path)
+
+    # -- ambilight ---------------------------------------------------------
+
+    def _start_ambilight(self) -> None:
+        """Begin driving the lamp, if one is configured.
+
+        Everything here is optional: a HUD with no lamp behaves identically, and
+        a lamp that fails takes itself out of the way rather than stopping the
+        overlay.
+        """
+        cfg = self.config.ambilight
+        if not cfg.enabled:
+            return
+        driver = FeelinLightDriver(cfg.ips, discover_seconds=cfg.discover_seconds)
+        if not driver.available:
+            log.warning("ambilight: enabled but no lamp is usable; carrying on without it")
+            driver = NullDriver()
+        self.ambilight = AmbilightService(
+            AmbilightShow(
+                charge_colour=_rgb(cfg.charge_colour, (0, 90, 255)),
+                charge_period=cfg.charge_period,
+                interdiction_colour=_rgb(cfg.interdiction_colour, (255, 0, 0)),
+                interdiction_period=cfg.interdiction_period,
+                danger_colour=_rgb(cfg.danger_colour, (255, 0, 0)),
+                danger_level=cfg.danger_level,
+                balance_colour=_rgb(cfg.balance_colour, (0, 255, 0)),
+                balance_flashes=cfg.balance_flashes,
+                balance_on=cfg.balance_on,
+                balance_off=cfg.balance_off,
+                brightness=cfg.brightness,
+            ),
+            driver,
+            fps=cfg.fps,
+        )
+        self.ambilight.start()
+        log.info("ambilight enabled (%s)", ", ".join(cfg.ips) or "discovery")
+
+    def stop_ambilight(self) -> None:
+        service = self.ambilight
+        self.ambilight = None
+        if service is not None:
+            service.stop()
+
+    def _pump_ambilight(self) -> None:
+        """Hand the current situation to the lamp.
+
+        The flags come from the status file, which is the only real-time source
+        for these states: the journal reports the start of an FSD charge and the
+        end of an interdiction, never the states in between.
+        """
+        service = self.ambilight
+        if service is None:
+            return
+        snapshot = self.status_reader.last if self.status_reader is not None else None
+        flags = snapshot.flags if snapshot is not None else 0
+        service.set_situation(Situation.from_flags(flags))
+
+        changes = self.state.balance_changes
+        if changes != self._seen_balance_changes:
+            self._seen_balance_changes = changes
+            service.flash_balance()
 
     def _drain(self) -> bool:
         """Apply queued events. Returns True when something changed."""
@@ -477,6 +558,7 @@ class HudApp:
         # Advance anything that depends on the clock before drawing.
         self.state.settle()
         self._poll_status()
+        self._pump_ambilight()
         self._drain()
         self._drain_updates()
         if self._pending_sound:
@@ -536,6 +618,7 @@ class HudApp:
             return
         log.info("watching %s", directory)
         self._start_status_reader(directory)
+        self._start_ambilight()
         self.watcher = JournalWatcher(
             directory,
             self._on_journal_event,
@@ -551,6 +634,7 @@ class HudApp:
             self.watcher.stop()
         if self.replay is not None:
             self.replay.stop()
+        self.stop_ambilight()
 
     def shutdown(self) -> None:
         self.stop_sources()

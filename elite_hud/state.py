@@ -490,6 +490,10 @@ class GameState:
         self.legal_state = ""
         #: True while the status file is the source of the balance.
         self.status_live = False
+        #: Incremented whenever the balance moves, for the ambilight flashes.
+        #: A counter rather than a flag so a change cannot be missed between two
+        #: reads of it.
+        self.balance_changes = 0
         #: Rarity and canonical names; the journal supplies localised names.
         # `is not None`, not `or`: these objects define __len__, so an empty one
         # is falsy and would be silently replaced -- which is how a CarrierBook
@@ -686,6 +690,8 @@ class GameState:
         already gave us from the last LoadGame.
         """
         if snapshot.balance is not None:
+            if self.credits is not None and snapshot.balance != self.credits:
+                self.balance_changes += 1
             self.credits = snapshot.balance
             self.status_live = True
         elif snapshot.empty and self.status_live:

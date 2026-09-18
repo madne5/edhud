@@ -203,6 +203,42 @@ class FactionConfig:
 
 
 @dataclass
+class AmbilightConfig:
+    """An ambient lamp driven by the game.
+
+    Off by default. It needs hardware on the local network and a third-party
+    library, so switching it on is a deliberate act rather than something a
+    fresh install does behind the commander's back.
+    """
+
+    enabled: bool = False
+    #: Lamp addresses on the LAN. Left empty, the library's discovery runs once
+    #: at start-up, but whether it also fills the address list is undocumented
+    #: (the source is obfuscated), so setting them is the reliable route.
+    ips: list[str] = field(default_factory=list)
+    #: Seconds to spend on discovery when no address is configured.
+    discover_seconds: float = 5.0
+    #: Frames per second sent to the lamp. Only changes are transmitted.
+    fps: float = 20.0
+    #: 0..1, applied to every colour.
+    brightness: float = 1.0
+    #: Blue breathing while the FSD charges.
+    charge_colour: list[int] = field(default_factory=lambda: [0, 0, 255])
+    charge_period: float = 1.4
+    #: Red strobe while being interdicted.
+    interdiction_colour: list[int] = field(default_factory=lambda: [255, 0, 0])
+    interdiction_period: float = 0.5
+    #: Steady red under attack.
+    danger_colour: list[int] = field(default_factory=lambda: [255, 0, 0])
+    danger_level: float = 0.55
+    #: Green flashes when the balance changes.
+    balance_colour: list[int] = field(default_factory=lambda: [0, 255, 0])
+    balance_flashes: int = 2
+    balance_on: float = 0.16
+    balance_off: float = 0.16
+
+
+@dataclass
 class FootfallConfig:
     """When to announce that landing somewhere would be a first footfall.
 
@@ -314,6 +350,7 @@ class Config:
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     footfall: FootfallConfig = field(default_factory=FootfallConfig)
     faction: FactionConfig = field(default_factory=FactionConfig)
+    ambilight: AmbilightConfig = field(default_factory=AmbilightConfig)
     materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
@@ -417,6 +454,15 @@ class Config:
             self.faction.match = "contains"
         self.faction.name = str(self.faction.name or "").strip()
 
+        ambilight = self.ambilight
+        ambilight.fps = min(60.0, max(1.0, float(ambilight.fps)))
+        ambilight.brightness = min(1.0, max(0.0, float(ambilight.brightness)))
+        ambilight.danger_level = min(1.0, max(0.0, float(ambilight.danger_level)))
+        ambilight.charge_period = max(0.05, float(ambilight.charge_period))
+        ambilight.interdiction_period = max(0.05, float(ambilight.interdiction_period))
+        ambilight.balance_flashes = max(1, int(ambilight.balance_flashes))
+        ambilight.ips = [str(ip).strip() for ip in ambilight.ips if str(ip).strip()]
+
         notifications = self.notifications
         notifications.max_visible = max(1, int(notifications.max_visible))
         notifications.hold_seconds = max(0.0, float(notifications.hold_seconds))
@@ -461,6 +507,7 @@ class Config:
             ("notifications", self.notifications),
             ("footfall", self.footfall),
             ("faction", self.faction),
+            ("ambilight", self.ambilight),
             ("materials", self.materials),
             ("carrier", self.carrier),
             ("commander", self.commander),
