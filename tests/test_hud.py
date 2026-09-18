@@ -1595,8 +1595,15 @@ class CarrierSegmentTests(unittest.TestCase):
 
     def test_a_carrier_whose_access_is_unknown_keeps_the_row_colour(self) -> None:
         """CarrierStats may not have been seen, and the icon must not then
-        claim an access level nobody reported."""
+        claim an access level nobody reported.
+
+        The access colours are moved off their defaults first: ``warning`` and
+        ``accent`` ship as the same orange, so comparing against the defaults
+        would pass whatever the code did. That cost a CI run to find.
+        """
         config = Config()
+        config.overlay.success = "#00ff00"
+        config.overlay.warning = "#ff00ff"
         state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
         state.apply(
             {"event": "CarrierStats", "CarrierID": 7, "CarrierType": "FleetCarrier",
@@ -1605,6 +1612,27 @@ class CarrierSegmentTests(unittest.TestCase):
         hud = self._hud(state, config)
         glyph = self._segment_for(hud, "ABC-123").glyph_color
         self.assertNotIn(glyph, (config.overlay.success, config.overlay.warning))
+        self.assertEqual(glyph, config.overlay.accent)
+        hud.close()
+
+    def test_the_access_colours_are_actually_used_when_known(self) -> None:
+        """The same override applied to a known access, so the two tests cannot
+        both pass by accident."""
+        config = Config()
+        config.overlay.success = "#00ff00"
+        config.overlay.warning = "#ff00ff"
+        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state.apply({"event": "CarrierStats", "CarrierID": 8,
+                     "CarrierType": "FleetCarrier", "Callsign": "AAA-111",
+                     "DockingAccess": "all",
+                     "SpaceUsage": {"TotalCapacity": 100, "FreeSpace": 50}})
+        state.apply({"event": "CarrierStats", "CarrierID": 9,
+                     "CarrierType": "FleetCarrier", "Callsign": "BBB-222",
+                     "DockingAccess": "friends",
+                     "SpaceUsage": {"TotalCapacity": 100, "FreeSpace": 50}})
+        hud = self._hud(state, config)
+        self.assertEqual(self._segment_for(hud, "AAA-111").glyph_color, "#00ff00")
+        self.assertEqual(self._segment_for(hud, "BBB-222").glyph_color, "#ff00ff")
         hud.close()
 
     def test_an_unnamed_carrier_is_not_shown(self) -> None:
