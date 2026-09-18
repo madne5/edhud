@@ -1511,10 +1511,12 @@ class CarrierSegmentTests(unittest.TestCase):
         if status is None:
             return []
         label = hud.config.overlay.labels.carrier_free
+        # Compared stripped: the renderer pads the label span with spaces, and an
+        # exact comparison found nothing at all.
         return [
             segment
             for segment in status.segments
-            if any(span.text == label for span in segment.spans)
+            if any(span.text.strip() == label for span in segment.spans)
         ]
 
     def test_nothing_is_shown_without_a_carrier(self) -> None:
