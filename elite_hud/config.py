@@ -203,6 +203,29 @@ class FactionConfig:
 
 
 @dataclass
+class ShoppingConfig:
+    """The shopping popup, shown while the galaxy map is open.
+
+    It answers "where do I buy the twenty things my missions want", which needs a
+    market database rather than the journal, so it is off until the commander
+    turns it on: it makes network requests on their behalf.
+    """
+
+    enabled: bool = False
+    #: Smallest landing pad the buying station must have: S, M or L.
+    min_pad: str = "L"
+    #: How many stations to offer per commodity.
+    systems_per_commodity: int = 3
+    #: Only used while the galaxy map is open; a state change re-reads it.
+    refresh_seconds: float = 300.0
+    #: Where to put the window, as an offset from the top of the screen.
+    offset_y: int = 60
+    #: Window size.
+    width: int = 580
+    height: int = 460
+
+
+@dataclass
 class AmbilightConfig:
     """An ambient lamp driven by the game.
 
@@ -351,6 +374,7 @@ class Config:
     footfall: FootfallConfig = field(default_factory=FootfallConfig)
     faction: FactionConfig = field(default_factory=FactionConfig)
     ambilight: AmbilightConfig = field(default_factory=AmbilightConfig)
+    shopping: ShoppingConfig = field(default_factory=ShoppingConfig)
     materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
@@ -454,6 +478,18 @@ class Config:
             self.faction.match = "contains"
         self.faction.name = str(self.faction.name or "").strip()
 
+        shopping = self.shopping
+        shopping.min_pad = str(shopping.min_pad or "L").strip().upper()
+        if shopping.min_pad not in ("S", "M", "L"):
+            log.warning(
+                "unknown shopping.min_pad %r, using 'L'", shopping.min_pad
+            )
+            shopping.min_pad = "L"
+        shopping.systems_per_commodity = max(1, min(10, int(shopping.systems_per_commodity)))
+        shopping.refresh_seconds = max(30.0, float(shopping.refresh_seconds))
+        shopping.width = max(320, int(shopping.width))
+        shopping.height = max(240, int(shopping.height))
+
         ambilight = self.ambilight
         ambilight.fps = min(60.0, max(1.0, float(ambilight.fps)))
         ambilight.brightness = min(1.0, max(0.0, float(ambilight.brightness)))
@@ -508,6 +544,7 @@ class Config:
             ("footfall", self.footfall),
             ("faction", self.faction),
             ("ambilight", self.ambilight),
+            ("shopping", self.shopping),
             ("materials", self.materials),
             ("carrier", self.carrier),
             ("commander", self.commander),

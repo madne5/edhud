@@ -17,6 +17,7 @@ from .exobiology import Confidence, ExobiologyTable, Genus, Species
 from .carriers import CarrierBook
 from .cartography import CartographyHold, is_sellable_body
 from .crime import CrimeRecord
+from .shopping import ShoppingList
 from .ships import ShipNames
 from .footfall import BodySurvey, FootfallPolicy
 from .materials import MaterialTable
@@ -467,6 +468,8 @@ class GameState:
         self.crime = CrimeRecord()
         #: Exploration data carried but not yet sold.
         self.cartography = CartographyHold()
+        #: Commodities the open missions still want, and where to buy them.
+        self.shopping = ShoppingList()
         #: Ship model names, learned from the journal (see elite_hud/ships.py).
         self.ship_names = (
             ship_names if ship_names is not None else ShipNames(ship_cache)
@@ -985,18 +988,42 @@ class GameState:
                 int(m["MissionID"]) for m in active
                 if isinstance(m, dict) and isinstance(m.get("MissionID"), int)
             }
+            for mission in active:
+                if isinstance(mission, dict):
+                    self._remember_cargo(mission)
+
+    def _remember_cargo(self, mission: dict) -> None:
+        """Note the commodity a mission wants, if it wants one.
+
+        Only collection and donation missions carry a Commodity; couriers and
+        the like do not, and are simply not part of the shopping list.
+        """
+        mission_id = mission.get("MissionID")
+        commodity = mission.get("Commodity")
+        if not isinstance(mission_id, int) or not commodity:
+            return
+        count = mission.get("Count")
+        self.shopping.add(
+            mission_id,
+            str(commodity),
+            str(mission.get("Commodity_Localised") or ""),
+            count if isinstance(count, int) and not isinstance(count, bool) else 1,
+            str(mission.get("DestinationSystem") or ""),
+        )
 
     def _on_MissionAccepted(self, event: dict) -> None:
         self.missions_known = True
         mission_id = event.get("MissionID")
         if isinstance(mission_id, int):
             self.active_missions.add(mission_id)
+        self._remember_cargo(event)
 
     def _close_mission(self, event: dict) -> None:
         self.missions_known = True
         mission_id = event.get("MissionID")
         if isinstance(mission_id, int):
             self.active_missions.discard(mission_id)
+            self.shopping.remove(mission_id)
 
     _on_MissionCompleted = _close_mission
     _on_MissionAbandoned = _close_mission

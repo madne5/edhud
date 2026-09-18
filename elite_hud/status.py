@@ -43,6 +43,12 @@ FLAG_IN_DANGER = 1 << 22
 FLAG_BEING_INTERDICTED = 1 << 23
 FLAG_JUMPING = 1 << 30
 
+#: GuiFocus values, taken from the dashboard constants rather than recalled.
+FOCUS_NONE = 0
+FOCUS_GALAXY_MAP = 6
+FOCUS_SYSTEM_MAP = 7
+FOCUS_ORRERY = 8
+
 
 @dataclass(slots=True)
 class StatusSnapshot:
@@ -53,6 +59,8 @@ class StatusSnapshot:
     #: "Clean", "Illegal", "Wanted", ... Depends on the local jurisdiction.
     legal_state: str = ""
     flags: int = 0
+    #: Which interface panel has focus; 6 is the galaxy map.
+    gui_focus: int = 0
     fuel_main: float | None = None
     cargo: float | None = None
     destination: str = ""
@@ -82,6 +90,14 @@ class StatusSnapshot:
     @property
     def hardpoints_deployed(self) -> bool:
         return bool(self.flags & FLAG_HARDPOINTS)
+
+    @property
+    def galaxy_map_open(self) -> bool:
+        """True while the galaxy map is on screen.
+
+        The only signal for it: no journal event reports a panel being opened.
+        """
+        return self.gui_focus == FOCUS_GALAXY_MAP
 
     @property
     def wanted(self) -> bool:
@@ -144,6 +160,9 @@ def parse_status(data: dict) -> StatusSnapshot:
     flags = _as_int(data.get("Flags"))
     if flags is not None:
         snapshot.flags = flags
+    focus = _as_int(data.get("GuiFocus"))
+    if focus is not None:
+        snapshot.gui_focus = focus
 
     fuel = data.get("Fuel")
     if isinstance(fuel, dict):

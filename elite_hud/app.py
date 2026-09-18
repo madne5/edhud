@@ -40,6 +40,7 @@ from .exobiology import Confidence, ExobiologyTable
 from .footfall import FootfallPolicy
 from .installation import SingleInstanceGuard
 from .journal.watcher import JournalWatcher
+from .market import SpanshMarket
 from .notifications import Notification, NotificationCenter
 from .paths import expand_user_path, find_journal_dir
 from .state import Alert, GameState, parse_timestamp
@@ -58,6 +59,12 @@ def _rgb(values, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
     if len(parts) != 3:
         return fallback
     return parts[0], parts[1], parts[2]
+
+
+def _monotonic() -> float:
+    import time  # noqa: PLC0415
+
+    return time.monotonic()
 
 
 def qt_text(text: str) -> str:
@@ -345,6 +352,12 @@ class HudApp:
         self._faction_actions: dict[str, object] = {}
         self.ambilight: AmbilightService | None = None
         self._seen_balance_changes = 0
+        self.shopping_window = None
+        self.market = SpanshMarket()
+        self._shopping_results: queue.Queue = queue.Queue()
+        self._shopping_thread: threading.Thread | None = None
+        self._shopping_map_open = False
+        self._shopping_at = 0.0
         self._monitor_group = None
         self._update_mode_group = None
         self._quit_after_update = False
@@ -411,6 +424,95 @@ class HudApp:
         self.ambilight = None
         if service is not None:
             service.stop()
+
+    def _pump_shopping(self) -> None:
+        """Show the shopping popup while the galaxy map is open.
+
+        Driven from the status file's GuiFocus: nothing in the journal reports a
+        panel being opened, so this is the only signal available.
+        """
+        cfg = self.config.shopping
+        reader = self.status_reader
+        snapshot = reader.last if reader is not None else None
+        open_now = bool(snapshot is not None and snapshot.galaxy_map_open)
+
+        if not cfg.enabled or not open_now:
+            if self._shopping_map_open:
+                self._shopping_map_open = False
+                if self.shopping_window is not None:
+                    self.shopping_window.hide()
+            return
+
+        if not self._shopping_map_open or not self.shopping_window:
+            if self.shopping_window is None:
+                from .overlay.shopping_window import ShoppingWindow
+
+                self.shopping_window = ShoppingWindow(cfg)
+            self._shopping_map_open = True
+            self._refresh_shopping(force=True)
+            self.shopping_window.show_for_map()
+        elif _monotonic() - self._shopping_at > cfg.refresh_seconds:
+            self._refresh_shopping(force=False)
+
+        self._drain_shopping()
+
+    def _refresh_shopping(self, *, force: bool) -> None:
+        """Kick off a lookup for every commodity the missions still want."""
+        if self._shopping_thread is not None and self._shopping_thread.is_alive():
+            return
+        needs = self.state.shopping.items
+        if not needs:
+            if self.shopping_window is not None:
+                self.shopping_window.set_message(
+                    "Нет миссий с товарами. Возьмите миссии на доставку — "
+                    "список появится здесь."
+                )
+            self._shopping_at = _monotonic()
+            return
+        if self.shopping_window is not None:
+            self.shopping_window.set_message("Поиск ближайших станций…")
+
+        reference = self.state.system.name
+        cfg = self.config.shopping
+        self._shopping_at = _monotonic()
+        self._shopping_thread = threading.Thread(
+            target=self._lookup_offers,
+            args=(needs, reference, cfg.min_pad, cfg.systems_per_commodity),
+            name="shopping",
+            daemon=True,
+        )
+        self._shopping_thread.start()
+
+    def _lookup_offers(self, needs, reference, min_pad, limit) -> None:
+        """Run the lookups off the UI thread; one is a network round trip."""
+        offers: dict[str, list] = {}
+        failures = 0
+        for need in needs:
+            try:
+                found = self.market.find_sellers(
+                    need.commodity,
+                    reference_system=reference,
+                    minimum_pad=min_pad,
+                    limit=limit,
+                )
+            except Exception:
+                log.exception("shopping: lookup failed for %s", need.commodity)
+                found, failures = [], failures + 1
+            offers[need.commodity] = found
+        self._shopping_results.put((offers, failures, reference))
+
+    def _drain_shopping(self) -> None:
+        try:
+            offers, failures, reference = self._shopping_results.get_nowait()
+        except queue.Empty:
+            return
+        if self.shopping_window is None:
+            return
+        note = f"источник: spansh.co.uk · от {reference} · пад {self.config.shopping.min_pad}"
+        if failures:
+            note += f" · не удалось получить {failures}"
+            self.shopping_window.set_accent(self.config.overlay.danger)
+        self.shopping_window.refresh(self.state.shopping.items, offers, note)
 
     def _pump_ambilight(self) -> None:
         """Hand the current situation to the lamp.
@@ -559,6 +661,7 @@ class HudApp:
         self.state.settle()
         self._poll_status()
         self._pump_ambilight()
+        self._pump_shopping()
         self._drain()
         self._drain_updates()
         if self._pending_sound:
