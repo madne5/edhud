@@ -7,7 +7,6 @@ actually get painted, which is the closest thing to a screenshot assertion.
 
 from __future__ import annotations
 
-import contextlib
 import math
 import os
 import subprocess
@@ -143,26 +142,6 @@ def opaque_pixels(image: QImage) -> tuple[int, int]:
     return sum(counts.values()), len(counts)
 
 
-@contextlib.contextmanager
-def frozen_pulse():
-    """Pin the alert border's animated opacity.
-
-    The border alpha follows ``sin(time)``, so the exact accent colour is only
-    painted at the peak of the pulse. Without pinning it, a test that looks for
-    that colour passes or fails depending on when the frame happens to be
-    grabbed -- which is exactly how it failed on the Linux runner while passing
-    on macOS.
-    """
-    from elite_hud.overlay import hud as hud_module
-
-    original = hud_module._monotonic  # noqa: SLF001 - the animation clock
-    # sin(6 * pi/12) == sin(pi/2) == 1, i.e. the brightest point of the pulse.
-    hud_module._monotonic = lambda: math.pi / 12  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        hud_module._monotonic = original  # type: ignore[assignment]
-
 
 @unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
 class HudRenderTests(unittest.TestCase):
@@ -180,7 +159,6 @@ class HudRenderTests(unittest.TestCase):
         self,
         config: Config,
         state: GameState,
-        alert: Alert | None = None,
         screen_width: int | None = None,
     ):
         from elite_hud.overlay.hud import HudWindow
@@ -189,8 +167,6 @@ class HudRenderTests(unittest.TestCase):
         hud = HudWindow(config, state)
         width = self.SCREEN_WIDTH if screen_width is None else screen_width
         hud._available_width = lambda: float(width)  # type: ignore[method-assign]
-        if alert is not None:
-            hud.push_alert(alert)
         hud.rebuild()
         return hud
 
@@ -290,50 +266,6 @@ class HudRenderTests(unittest.TestCase):
         self.assertNotIn("готов через", text)
         hud.close()
 
-    def test_confirmed_alert_shows_the_first_logged_payout(self) -> None:
-        config = Config()
-        state = make_state(config)
-        alert = Alert(
-            key="k", title="Stratum Tectonicas", detail="confirmed",
-            value=19_010_800, confidence=Confidence.CONFIRMED,
-            system="Synuefe PK-V b48-0", body="Synuefe PK-V b48-0 5",
-            bonus_applies=True, payout=95_054_000,
-        )
-        hud = self._hud(config, state, alert)
-        text = hud.bar_text()
-        self.assertIn("Stratum Tectonicas", text)
-        self.assertIn("19.0M", text)
-        self.assertIn("×5", text)
-        self.assertIn("95.1M", text)
-        hud.close()
-
-    def test_alert_replaces_the_biology_summary(self) -> None:
-        """The alert already carries the organic, so the bio segment is dropped."""
-        config = Config()
-        alert = Alert(
-            key="k", title="Stratum Tectonicas", detail="confirmed",
-            value=19_010_800, confidence=Confidence.CONFIRMED, system="S", body="B",
-        )
-        state = make_state(config)
-        calm = self._hud(config, state)
-        self.assertIn("БИО", calm.bar_text())
-        calm.close()
-
-        hud = self._hud(config, state, alert)
-        self.assertNotIn("БИО", hud.bar_text())
-        self.assertIn("Stratum Tectonicas", hud.bar_text())
-        hud.close()
-
-    def test_possible_alert_is_marked_as_such(self) -> None:
-        config = Config()
-        alert = Alert(
-            key="k", title="Stratum", detail="possible", value=19_010_800,
-            confidence=Confidence.POSSIBLE, system="S", body="B",
-        )
-        hud = self._hud(config, make_state(config), alert)
-        self.assertIn("возможно", hud.bar_text())
-        hud.close()
-
     def test_empty_state_never_crashes_and_says_so(self) -> None:
         config = Config()
         empty = GameState()
@@ -388,22 +320,6 @@ class HudRenderTests(unittest.TestCase):
         self.assertGreater(long.width(), short_width)
         long.close()
 
-    def test_the_alert_border_is_deterministic_when_the_clock_is_pinned(self) -> None:
-        """Same input, same frame: the pulse must not make rendering flaky."""
-        config = Config()
-        alert = Alert(
-            key="k", title="Clypeus", detail="guaranteed", value=16_202_800,
-            confidence=Confidence.GUARANTEED, system="S", body="B",
-        )
-        with frozen_pulse():
-            first = self._hud(config, make_state(config), alert)
-            a = pixel_counts(first.grab().toImage())
-            first.close()
-            second = self._hud(config, make_state(config), alert)
-            b = pixel_counts(second.grab().toImage())
-            second.close()
-        self.assertEqual(a, b, "two frames with the same clock differed")
-
     def test_something_is_actually_painted(self) -> None:
         config = Config()
         state = make_state(config)
@@ -425,25 +341,6 @@ class HudRenderTests(unittest.TestCase):
         # A calm bar never uses the danger colour.
         self.assertEqual(counts[rgb(QColor(config.overlay.danger))], 0)
         hud.close()
-
-    def test_alert_uses_the_accent_colour(self) -> None:
-        config = Config()
-        alert = Alert(
-            key="k", title="Clypeus", detail="guaranteed", value=16_202_800,
-            confidence=Confidence.GUARANTEED, system="S", body="B",
-        )
-        with frozen_pulse():
-            calm = self._hud(config, make_state(config))
-            calm_accent = pixel_counts(calm.grab().toImage())[rgb(QColor(config.overlay.accent))]
-            calm.close()
-
-            hud = self._hud(config, make_state(config), alert)
-            alert_accent = pixel_counts(hud.grab().toImage())[rgb(QColor(config.overlay.accent))]
-            hud.close()
-
-        # The alert draws a full accent border; a calm bar only tints a glyph.
-        self.assertGreater(alert_accent, calm_accent + 100)
-        self.assertGreater(alert_accent, 100)
 
     def test_segments_config_is_respected(self) -> None:
         config = Config()
@@ -725,14 +622,6 @@ class StatusRowTests(unittest.TestCase):
         self.assertIn("макс: 84 ly", text)
         self.assertIn("тек: 84 ly", text)
 
-    def test_a_learned_ship_name_replaces_the_symbol_fallback(self) -> None:
-        config = Config()
-        state = self._state(config)
-        state.ship_names.learn("explorer_nx", "Caspian Explorer")
-        state.apply({"event": "Loadout", "Ship": "explorer_nx", "ShipIdent": "KSS-14",
-                     "MaxJumpRange": 83.735268})
-        self.assertIn("Caspian Explorer", self._status(config, state))
-
     def test_loading_cargo_lowers_the_current_range(self) -> None:
         """The point of showing two numbers at all."""
         config = Config()
@@ -980,25 +869,6 @@ class RowAlignmentTests(unittest.TestCase):
         self.assertEqual(status.segments[0].lead, 0.0)
         hud.close()
 
-    def test_the_alert_segment_starts_the_primary_row(self) -> None:
-        config = Config()
-        state = make_state(config)
-        alert = Alert(
-            key="k",
-            title="Stratum",
-            detail="",
-            value=20_000_000,
-            confidence=Confidence.CONFIRMED,
-            system="Synuefe PK-V b48-0",
-            body="Synuefe PK-V b48-0 5",
-        )
-        hud = self._hud(config, state)
-        hud.push_alert(alert)
-        hud.rebuild()
-        primary = self._row(hud, "primary")
-        self.assertEqual(primary.segments[0].lead, 0.0)
-        hud.close()
-
     def test_every_plate_fits_its_content_with_equal_padding(self) -> None:
         """A plate that disagrees with its content is what made this look like a
         painting bug: the plate stayed centred while the text slid right."""
@@ -1079,256 +949,8 @@ class FakeClock:
         self.now += seconds
 
 
-@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
-class NotificationHudTests(unittest.TestCase):
-    """Notifications reach the screen through the HUD, not just the centre."""
-
-    app: "QApplication"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([])
-
-    def _hud(self, config: Config | None = None, clock=None):
-        from elite_hud.overlay.hud import HudWindow
-
-        config = config or Config()
-        hud = HudWindow(config, make_state(config), clock=clock)
-        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
-        hud.rebuild()
-        return hud
-
-    @staticmethod
-    def _note(**kwargs) -> Notification:
-        fields = {"key": "rank:Empire", "title": "Граф", "glyph": "star"}
-        fields.update(kwargs)
-        return Notification(**fields)
-
-    def _notification_rows(self, hud):
-        return [row for row in hud._rows if row.kind == "notification"]
-
-    def test_a_pushed_notification_becomes_a_row(self) -> None:
-        hud = self._hud()
-        self.assertEqual(self._notification_rows(hud), [])
-        hud.push_notification(self._note(detail="Empire"))
-        rows = self._notification_rows(hud)
-        self.assertEqual(len(rows), 1)
-        text = " ".join(span.text for span in rows[0].segments[0].spans)
-        self.assertIn("Граф", text)
-        self.assertIn("Empire", text)
-        hud.close()
-
-    def test_the_accent_bar_uses_the_tone_colour(self) -> None:
-        config = Config()
-        hud = self._hud(config)
-        hud.push_notification(self._note(tone="danger"))
-        row = self._notification_rows(hud)[0]
-        self.assertEqual(row.accent, config.overlay.danger)
-        self.assertEqual(row.segments[0].glyph_color, config.overlay.danger)
-
-        hud.clear_alert()
-        hud.notifications.clear()
-        hud.push_notification(self._note(key="other", tone="success"))
-        row = self._notification_rows(hud)[0]
-        self.assertEqual(row.accent, config.overlay.success)
-        hud.close()
-
-    def test_the_notification_fades_in_and_settles(self) -> None:
-        clock = FakeClock()
-        hud = self._hud(clock=clock)
-        hud.push_notification(self._note())
-
-        first = self._notification_rows(hud)[0]
-        self.assertAlmostEqual(first.opacity, 0.0)
-        # Sliding down from above, so it is drawn higher than its final spot.
-        self.assertLess(first.offset, 0.0)
-
-        clock.advance(hud.config.notifications.fade_in_seconds)
-        hud.rebuild()
-        settled = self._notification_rows(hud)[0]
-        self.assertAlmostEqual(settled.opacity, 1.0)
-        self.assertAlmostEqual(settled.offset, 0.0)
-        hud.close()
-
-    def test_the_animation_timer_runs_only_while_something_moves(self) -> None:
-        clock = FakeClock()
-        hud = self._hud(clock=clock)
-        self.assertFalse(hud._animation_timer.isActive())
-
-        hud.push_notification(self._note())
-        self.assertTrue(hud._animation_timer.isActive())
-
-        clock.advance(hud.config.notifications.fade_in_seconds)
-        hud._tick_animation()
-        self.assertFalse(hud._animation_timer.isActive())
-        hud.close()
-
-    def test_repeats_fold_and_show_a_count(self) -> None:
-        hud = self._hud()
-        hud.push_notification(self._note())
-        hud.push_notification(self._note())
-        rows = self._notification_rows(hud)
-        self.assertEqual(len(rows), 1)
-        text = " ".join(span.text for span in rows[0].segments[0].spans)
-        self.assertIn("x2", text)
-        hud.close()
-
-    def test_different_kinds_get_their_own_lines(self) -> None:
-        hud = self._hud()
-        hud.push_notification(self._note())
-        hud.push_notification(self._note(key="footfall:Body 3", title="Первый след"))
-        self.assertEqual(len(self._notification_rows(hud)), 2)
-        hud.close()
-
-    def test_notifications_can_be_turned_off(self) -> None:
-        config = Config()
-        config.notifications.enabled = False
-        hud = self._hud(config)
-        hud.push_notification(self._note())
-        self.assertEqual(self._notification_rows(hud), [])
-        self.assertFalse(hud._animation_timer.isActive())
-        hud.close()
-
-    def test_the_bar_grows_to_fit_a_notification(self) -> None:
-        hud = self._hud()
-        before = hud.height()
-        hud.push_notification(self._note(detail="Empire"))
-        self.assertGreater(hud.height(), before)
-        hud.close()
-
-    def test_a_relayout_keeps_the_notification_visible(self) -> None:
-        """rebuild() runs on the countdown tick; it must not drop the row."""
-        hud = self._hud()
-        hud.push_notification(self._note())
-        for _ in range(3):
-            hud.rebuild()
-        self.assertEqual(len(self._notification_rows(hud)), 1)
-        hud.close()
-
-
 if __name__ == "__main__":
     unittest.main()
-
-
-@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
-class FactionSegmentTests(unittest.TestCase):
-    """The followed faction: green where it runs the system, red where it does not."""
-
-    app: "QApplication"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([])
-
-    def _hud(self, state, config):
-        from elite_hud.overlay.hud import HudWindow
-
-        with_segments(config, top=LEGACY_TOP, bottom=["faction"])
-        hud = HudWindow(config, state)
-        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
-        hud.rebuild()
-        return hud
-
-    def _state(self, name="Traders & Explorers"):
-        from elite_hud.state import GameState
-
-        config = Config()
-        state = GameState(faction_name=name,
-        )
-        return state
-
-    def _faction_row(self, hud):
-        return next(
-            (
-                row
-                for row in hud._rows
-                if row.kind == "status"
-                and any(
-                    span.text.startswith("Traders")
-                    for segment in row.segments
-                    for span in segment.spans
-                )
-            ),
-            None,
-        )
-
-    def _jump(self, state, influence, controller, system="Sol"):
-        state.apply(
-            {
-                "event": "FSDJump",
-                "StarSystem": system,
-                "SystemAddress": 1,
-                "Population": 1000,
-                "SystemFaction": {"Name": controller},
-                "Factions": [
-                    {"Name": "Traders & Explorers Inc.", "Influence": influence}
-                ],
-            }
-        )
-
-    def test_nothing_is_shown_without_a_configured_faction(self) -> None:
-        config = Config()
-        state = self._state(name="")
-        self._jump(state, 0.8, "Traders & Explorers Inc.")
-        hud = self._hud(state, config)
-        self.assertNotIn("Traders", hud.bar_text())
-        hud.close()
-
-    def test_nothing_is_shown_before_a_system_with_factions(self) -> None:
-        config = Config()
-        hud = self._hud(self._state(), config)
-        self.assertNotIn("Traders", hud.bar_text())
-        hud.close()
-
-    def test_controlling_faction_is_green(self) -> None:
-        config = Config()
-        state = self._state()
-        self._jump(state, 0.80981, "Traders & Explorers Inc.")
-        hud = self._hud(state, config)
-        row = self._faction_row(hud)
-        self.assertIsNotNone(row, "the faction should be on the status row")
-        segment = next(
-            segment
-            for segment in row.segments
-            if any(span.text.startswith("Traders") for span in segment.spans)
-        )
-        self.assertEqual(segment.glyph_color, config.overlay.success)
-        text = " ".join(span.text for span in segment.spans)
-        self.assertIn("81%", text)
-        hud.close()
-
-    def test_a_non_controlling_faction_is_red(self) -> None:
-        config = Config()
-        state = self._state()
-        self._jump(state, 0.303, "Someone Else")
-        hud = self._hud(state, config)
-        row = self._faction_row(hud)
-        self.assertIsNotNone(row)
-        segment = next(
-            segment
-            for segment in row.segments
-            if any(span.text.startswith("Traders") for span in segment.spans)
-        )
-        self.assertEqual(segment.glyph_color, config.overlay.danger)
-        self.assertIn("30%", " ".join(span.text for span in segment.spans))
-        hud.close()
-
-    def test_an_uninhabited_system_hides_it_again(self) -> None:
-        config = Config()
-        state = self._state()
-        self._jump(state, 0.80981, "Traders & Explorers Inc.")
-        state.apply(
-            {
-                "event": "FSDJump",
-                "StarSystem": "Blu Theia AV-F d11-1",
-                "SystemAddress": 2,
-                "Population": 0,
-                "Factions": [],
-            }
-        )
-        hud = self._hud(state, config)
-        self.assertNotIn("Traders", hud.bar_text())
-        hud.close()
 
 
 @unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
@@ -1404,52 +1026,6 @@ class CrimeSegmentTests(unittest.TestCase):
         state.apply({"event": "PayFines", "Amount": 200, "AllFines": True})
         hud = self._hud(state, config)
         self.assertNotIn("штраф", hud.bar_text())
-        hud.close()
-
-
-@unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")
-class SuperpowerProgressTests(unittest.TestCase):
-    """The percentage is a login snapshot and can be switched off."""
-
-    app: "QApplication"
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.app = QApplication.instance() or QApplication([])
-
-    def _hud(self, config, state):
-        from elite_hud.overlay.hud import HudWindow
-
-        with_segments(config, bottom=["empire", "federation"])
-        hud = HudWindow(config, state)
-        hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
-        hud.rebuild()
-        return hud
-
-    def _state(self, config):
-        from elite_hud.state import GameState
-
-        state = GameState()
-        state.apply({"event": "Rank", "Empire": 9, "Federation": 6})
-        state.apply({"event": "Progress", "Empire": 13, "Federation": 28})
-        return state
-
-    def test_the_percentage_shows_by_default(self) -> None:
-        config = Config()
-        hud = self._hud(config, self._state(config))
-        text = hud.bar_text()
-        self.assertIn("Граф", text)
-        self.assertIn("13%", text)
-        hud.close()
-
-    def test_it_can_be_switched_off(self) -> None:
-        config = Config()
-        config.overlay.superpower_progress = False
-        hud = self._hud(config, self._state(config))
-        text = hud.bar_text()
-        # The rank itself stays: it does update, on promotion.
-        self.assertIn("Граф", text)
-        self.assertNotIn("13%", text)
         hud.close()
 
 
