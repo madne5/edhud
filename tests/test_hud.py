@@ -63,9 +63,7 @@ else:
 PYSIDE_AVAILABLE = QT_SKIP_REASON is None
 
 from elite_hud.config import Config
-from elite_hud.exobiology import ExobiologyTable
-from elite_hud.notifications import Notification
-from elite_hud.state import Alert, Confidence, GameState
+from elite_hud.state import GameState
 
 
 #: The shipped row defaults, read from the configuration rather than copied, so
@@ -93,7 +91,7 @@ def with_segments(config: Config, *, top=None, bottom=None) -> Config:
 
 
 def make_state(config: Config) -> GameState:
-    state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+    state = GameState()
     state.apply({"event": "Fileheader", "Odyssey": True})
     state.apply({"event": "FSDJump", "StarSystem": "Synuefe PK-V b48-0",
                  "SystemAddress": 672027125153})
@@ -338,7 +336,7 @@ class HudRenderTests(unittest.TestCase):
 
     def test_empty_state_never_crashes_and_says_so(self) -> None:
         config = Config()
-        empty = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        empty = GameState()
         hud = self._hud(config, empty)
         self.assertEqual(hud.bar_text(), f"[radar]  {config.overlay.labels.waiting}")
         self.assertGreater(hud.width(), 0)
@@ -686,7 +684,7 @@ class StatusRowTests(unittest.TestCase):
 
     def test_the_row_is_empty_before_the_journal_says_anything(self) -> None:
         config = Config()
-        empty = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        empty = GameState()
         self.assertEqual(self._status(config, empty), "")
 
     def test_game_mode_is_shown_in_russian(self) -> None:
@@ -1208,13 +1206,6 @@ class NotificationHudTests(unittest.TestCase):
         hud.close()
 
 
-class PreviewFixtureTests(unittest.TestCase):
-    """The preview tool's fixture must stay in sync with the journal format."""
-
-    def test_preview_tool_exists(self) -> None:
-        self.assertTrue((Path(__file__).parent.parent / "tools" / "preview_hud.py").is_file())
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -1242,10 +1233,7 @@ class FactionSegmentTests(unittest.TestCase):
         from elite_hud.state import GameState
 
         config = Config()
-        state = GameState(
-            ExobiologyTable(),
-            value_threshold=config.alerts.min_value,
-            faction_name=name,
+        state = GameState(faction_name=name,
         )
         return state
 
@@ -1366,7 +1354,7 @@ class CrimeSegmentTests(unittest.TestCase):
         from elite_hud.state import GameState
 
         config = Config()
-        return GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        return GameState()
 
     def test_a_clean_commander_sees_nothing(self) -> None:
         """The common case must not cost a permanent "not wanted" on screen."""
@@ -1441,7 +1429,7 @@ class SuperpowerProgressTests(unittest.TestCase):
     def _state(self, config):
         from elite_hud.state import GameState
 
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         state.apply({"event": "Rank", "Empire": 9, "Federation": 6})
         state.apply({"event": "Progress", "Empire": 13, "Federation": 28})
         return state
@@ -1487,7 +1475,7 @@ class CarrierSegmentTests(unittest.TestCase):
         from elite_hud.state import GameState
 
         config = Config()
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         for event in (
             {"event": "CarrierStats", "CarrierID": 3714982656,
              "CarrierType": "FleetCarrier", "Callsign": "V3G-N1H",
@@ -1521,7 +1509,7 @@ class CarrierSegmentTests(unittest.TestCase):
 
     def test_nothing_is_shown_without_a_carrier(self) -> None:
         config = Config()
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         hud = self._hud(state, config)
         self.assertEqual(self._carrier_segments(hud), [])
         hud.close()
@@ -1604,7 +1592,7 @@ class CarrierSegmentTests(unittest.TestCase):
         config = Config()
         config.overlay.success = "#00ff00"
         config.overlay.warning = "#ff00ff"
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         state.apply(
             {"event": "CarrierStats", "CarrierID": 7, "CarrierType": "FleetCarrier",
              "Callsign": "ABC-123", "SpaceUsage": {"TotalCapacity": 100, "FreeSpace": 50}}
@@ -1621,7 +1609,7 @@ class CarrierSegmentTests(unittest.TestCase):
         config = Config()
         config.overlay.success = "#00ff00"
         config.overlay.warning = "#ff00ff"
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         state.apply({"event": "CarrierStats", "CarrierID": 8,
                      "CarrierType": "FleetCarrier", "Callsign": "AAA-111",
                      "DockingAccess": "all",
@@ -1638,7 +1626,7 @@ class CarrierSegmentTests(unittest.TestCase):
     def test_an_unnamed_carrier_is_not_shown(self) -> None:
         """CarrierLocation alone gives an identifier but no callsign."""
         config = Config()
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         state.apply(
             {"event": "CarrierLocation", "CarrierID": 1234, "CarrierType": "FleetCarrier"}
         )

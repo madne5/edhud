@@ -20,5 +20,3 @@ build = ["pyinstaller>=6.0"]
 [tool.setuptools]
 packages = ["elite_hud", "elite_hud.journal", "elite_hud.overlay"]
 
-[tool.setuptools.package-data]
-elite_hud = ["data/*.json"]

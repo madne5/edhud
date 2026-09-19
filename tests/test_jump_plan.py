@@ -5,7 +5,6 @@ from __future__ import annotations
 import unittest
 
 from elite_hud.config import Config
-from elite_hud.exobiology import ExobiologyTable
 from elite_hud.state import GameState, JumpPlan
 
 
@@ -55,7 +54,7 @@ class JumpPlanUnitTests(unittest.TestCase):
 class JumpPlanStateTests(unittest.TestCase):
     def setUp(self) -> None:
         config = Config()
-        self.state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        self.state = GameState()
         self.state.apply({"event": "FSDJump", "StarSystem": "Start", "SystemAddress": 1})
 
     def target(self, **kwargs) -> None:

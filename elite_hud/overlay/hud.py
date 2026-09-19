@@ -24,16 +24,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from ..config import Config
-from ..exobiology import Confidence
-from .. import ranks
-from ..formatting import (
-    CONFIDENCE_GLYPH,
-    CONFIDENCE_LABEL,
-    format_countdown,
-    format_credits,
-)
-from ..state import Alert, GameState
-from ..notifications import Notification, NotificationCenter
+from ..formatting import format_countdown, format_credits
+from ..state import GameState
 from . import win32
 from .icons import draw_glyph
 
@@ -156,17 +148,6 @@ class HudWindow(QWidget):
         super().__init__(None)
         self.config = config
         self.state = state
-        self._alert: Alert | None = None
-        self._alert_until = 0.0
-        self._alert_pulse = 0.0
-        cfg = config.notifications
-        self.notifications = NotificationCenter(
-            max_visible=cfg.max_visible,
-            hold_seconds=cfg.hold_seconds,
-            fade_in=cfg.fade_in_seconds,
-            fade_out=cfg.fade_out_seconds,
-            **({} if clock is None else {"clock": clock}),
-        )
         self._segments: list[Segment] = []
         self._rows: list[Row] = []
         self._row_boxes: list[tuple[Row, float, float, float]] = []
@@ -213,15 +194,6 @@ class HudWindow(QWidget):
         self._screen_timer.timeout.connect(self._reposition)
         self._screen_timer.start()
 
-        # Notifications animate, which needs a faster repaint than the countdown
-        # tick. The timer only runs while something is actually moving: a HUD
-        # repainting at 60 Hz for a whole session inside a game is a real cost,
-        # and nothing is on screen most of the time.
-        self._animation_timer = QTimer(self)
-        self._animation_timer.setInterval(
-            max(8, int(1000.0 / max(1.0, config.notifications.animation_hz)))
-        )
-        self._animation_timer.timeout.connect(self._tick_animation)
 
     # -- window setup ------------------------------------------------------
 
@@ -284,56 +256,8 @@ class HudWindow(QWidget):
 
     # -- public API --------------------------------------------------------
 
-    def push_alert(self, alert: Alert) -> None:
-        self._alert = alert
-        self._alert_until = _monotonic() + self.config.alerts.display_seconds
-        log.info(
-            "alert: %s (%s, %s cr) on %s in %s",
-            alert.title,
-            alert.confidence.value,
-            f"{alert.value:,}",
-            alert.body or "?",
-            alert.system or "?",
-        )
-        self.update()
-
-    def clear_alert(self) -> None:
-        self._alert = None
-        self._alert_until = 0.0
-        self.update()
-
-    def push_notification(self, notification: Notification) -> None:
-        """Show a timed notification, starting the animation timer if needed."""
-        if not self.config.notifications.enabled:
-            return
-        self.notifications.push(notification)
-        self._sync_animation_timer()
-        self.rebuild()
-
-    def _sync_animation_timer(self) -> None:
-        """Run the fast timer only while something is actually animating."""
-        wanted = self.config.notifications.enabled and self.notifications.animating()
-        if wanted and not self._animation_timer.isActive():
-            self._animation_timer.start()
-        elif not wanted and self._animation_timer.isActive():
-            self._animation_timer.stop()
-
-    def _tick_animation(self) -> None:
-        self.notifications.tick()
-        self.rebuild()
-        self._sync_animation_timer()
-
     def rebuild(self) -> None:
         """Recompute the bar contents, resizing and repositioning if needed."""
-        self._alert_pulse = _monotonic()
-        if self._alert is not None and _monotonic() >= self._alert_until:
-            self._alert = None
-
-        # Pruned here as well as on the animation timer: the timer only runs
-        # while something is moving, and an item that has finished fading must
-        # not linger in the centre where the next push would fold into it.
-        self.notifications.tick()
-
         self._rows = self._compose_rows()
         # Kept as an alias so the primary row's segments remain directly
         # reachable, which the tests and the widen/shrink logic both use.
@@ -353,53 +277,7 @@ class HudWindow(QWidget):
         status.segments = self._status_segments()
         if status.segments:
             rows.append(status)
-        rows.extend(self._notification_rows())
         return rows
-
-    def _notification_rows(self) -> list[Row]:
-        """One row per live notification, newest last, with its animation."""
-        if not self.config.notifications.enabled:
-            return []
-        rows: list[Row] = []
-        for entry in self.notifications.rendered():
-            item = entry.notification
-            colour = self._tone_colour(item.tone)
-            spans = [Span(item.title, color=colour, bold=True)]
-            if item.detail:
-                spans.append(
-                    Span(f"  {item.detail}", color=self.config.overlay.foreground, dim=0.78)
-                )
-            if item.count > 1:
-                spans.append(
-                    Span(f"  x{item.count}", color=colour, bold=True, dim=0.9)
-                )
-            rows.append(
-                Row(
-                    style=self._status_style,
-                    segments=[
-                        Segment(
-                            glyph=item.glyph if self.config.overlay.show_glyphs else None,
-                            spans=spans,
-                            glyph_color=colour,
-                        )
-                    ],
-                    kind="notification",
-                    gap=self._metrics.height() * 0.22,
-                    opacity=entry.opacity,
-                    offset=entry.offset,
-                    accent=colour,
-                )
-            )
-        return rows
-
-    def _tone_colour(self, tone: str) -> str:
-        """Map a notification's colour role onto the overlay palette."""
-        cfg = self.config.overlay
-        return {
-            "success": cfg.success,
-            "danger": cfg.danger,
-            "foreground": cfg.foreground,
-        }.get(tone, cfg.accent)
 
     def _status_segments(self) -> list[Segment]:
         """The always-visible second row."""
@@ -411,28 +289,18 @@ class HudWindow(QWidget):
             segment: Segment | None = None
             if name == "mode":
                 segment = self._mode_segment(0.0)
-            elif name == "empire":
-                segment = self._superpower_segment("Empire", 0.0)
-            elif name == "federation":
-                segment = self._superpower_segment("Federation", 0.0)
             elif name == "ship":
                 segment = self._ship_segment(0.0)
             elif name == "missions":
                 segment = self._missions_segment(0.0)
-            elif name == "unsold":
-                segment = self._unsold_segment(0.0)
             elif name == "next":
                 segment = self._next_segment(0.0)
             elif name == "carriers":
                 # One segment per carrier, so two of them read as two entries
                 # rather than one long line.
                 segments.extend(self._carrier_segments())
-            elif name == "faction":
-                segment = self._faction_segment(0.0)
             elif name == "crime":
                 segment = self._crime_segment(0.0)
-            elif name == "cartography":
-                segment = self._cartography_segment(0.0)
             if segment is not None:
                 segments.append(segment)
         return self._apply_leads(segments, style.metrics.height() * 0.95)
@@ -455,31 +323,6 @@ class HudWindow(QWidget):
         return Segment(
             glyph="globe" if self.config.overlay.show_glyphs else None,
             spans=[Span(text, color=color)],
-            glyph_color=color,
-            lead=lead,
-        )
-
-    def _superpower_segment(self, track: str, lead: float) -> Segment | None:
-        """Empire and Federation progress, hidden once the top rank is reached."""
-        index = self.state.ranks.get(track)
-        if index is None:
-            return None
-        ladder = ranks.ladder(track)
-        if ladder is None or ladder.is_max(index):
-            return None
-        cfg = self.config.overlay
-        color = cfg.accent
-        spans = [Span(ladder.name(index), color=color)]
-        # The percentage is what the game reported at login: Rank and Progress
-        # are written once per session, so it cannot move while playing. Shown
-        # by default because it is still true and still resets on promotion,
-        # but it can be switched off for anyone who reads it as a live figure.
-        percent = self.state.rank_progress.get(track)
-        if cfg.superpower_progress and percent is not None:
-            spans.append(Span(f" {percent}%", color=cfg.foreground, dim=0.75))
-        return Segment(
-            glyph=ladder.glyph if cfg.show_glyphs else None,
-            spans=spans,
             glyph_color=color,
             lead=lead,
         )
@@ -532,31 +375,6 @@ class HudWindow(QWidget):
             lead=lead,
         )
 
-    def _cartography_segment(self, lead: float) -> Segment | None:
-        """Unsold exploration data, counted rather than valued.
-
-        Deliberately no credit figure: see elite_hud/cartography.py for why the
-        count is shown and the money is not.
-        """
-        hold = self.state.cartography
-        if hold.empty:
-            return None
-        cfg = self.config.overlay
-        return Segment(
-            glyph="radar" if cfg.show_glyphs else None,
-            spans=[
-                Span(f"{cfg.labels.cartography} ", color=cfg.foreground, dim=0.7),
-                Span(str(hold.body_count), color=cfg.accent, bold=True),
-                Span(
-                    f" {cfg.labels.bodies_short} / {hold.system_count} {cfg.labels.systems_short}",
-                    color=cfg.foreground,
-                    dim=0.7,
-                ),
-            ],
-            glyph_color=cfg.accent,
-            lead=lead,
-        )
-
     def _crime_segment(self, lead: float) -> Segment | None:
         """Notoriety and unpaid fines.
 
@@ -583,28 +401,6 @@ class HudWindow(QWidget):
         return Segment(
             glyph="warning" if cfg.show_glyphs else None,
             spans=spans,
-            glyph_color=colour,
-            lead=lead,
-        )
-
-    def _faction_segment(self, lead: float) -> Segment | None:
-        """The followed faction's standing here: green where it runs the place.
-
-        Hidden for an uninhabited system rather than left showing the previous
-        system's figure, and hidden when no faction is configured.
-        """
-        status = self.state.faction
-        if not status.wanted or not status.found:
-            return None
-        cfg = self.config.overlay
-        colour = cfg.success if status.controlling else cfg.danger
-        return Segment(
-            # Same glyph either way; the colour carries the answer.
-            glyph="scales" if cfg.show_glyphs else None,
-            spans=[
-                Span(status.matched or status.wanted, color=colour, bold=True),
-                Span(f" {status.percent}%", color=cfg.foreground, dim=0.75),
-            ],
             glyph_color=colour,
             lead=lead,
         )
@@ -677,59 +473,12 @@ class HudWindow(QWidget):
             lead=lead,
         )
 
-    def _unsold_segment(self, lead: float) -> Segment | None:
-        """Value sampled or earned but not yet banked, which death would take.
-
-        Exobiology only. Exploration is deliberately absent: the journal says
-        what was sold but never what is held, and counting scans since the last
-        sale did not reproduce real sales, so it is not shown at all.
-        """
-        unsold = self.state.unsold
-        if not unsold.total:
-            return None
-        cfg = self.config.overlay
-        # Losing this on death is the point of showing it, so it reads as a
-        # warning once it is worth real money.
-        colour = cfg.danger if unsold.total >= self.config.alerts.min_value else cfg.foreground
-        spans = [
-            Span(f"{cfg.labels.unsold} ", color=cfg.foreground, dim=0.7),
-            Span(format_credits(unsold.total), color=colour, bold=True),
-        ]
-        # The sample count is what makes the figure checkable: a total that
-        # looks wrong can be traced to either the number of samples or the value
-        # of each one, and those are very different bugs.
-        if unsold.bio_count:
-            spans.append(
-                Span(
-                    f" ({unsold.bio_count} {cfg.labels.unsold_samples})",
-                    color=cfg.foreground,
-                    dim=0.68,
-                )
-            )
-        return Segment(
-            glyph="gem" if cfg.show_glyphs else None,
-            spans=spans,
-            glyph_color=colour,
-            lead=lead,
-        )
-
-    # -- composition -------------------------------------------------------
-
     def _compose(self) -> list[Segment]:
         cfg = self.config.overlay
         labels = cfg.labels
         segments: list[Segment] = []
 
-        if self._alert is not None:
-            segments.append(self._alert_segment(0.0))
-            if not self.state.system.name:
-                return self._apply_leads(segments, self._metrics.height() * 0.95)
-
         for name in cfg.segments:
-            # The alert already names the organic and its value, so the summary
-            # segment would only repeat it and push the bar off screen.
-            if name == "bio" and self._alert is not None:
-                continue
             segment: Segment | None = None
             if name == "carrier":
                 segment = self._carrier_segment(0.0)
@@ -739,10 +488,6 @@ class HudWindow(QWidget):
                 segment = self._balance_segment(0.0)
             elif name == "cargo":
                 segment = self._cargo_segment(0.0)
-            elif name == "fss":
-                segment = self._fss_segment(0.0)
-            elif name == "bio":
-                segment = self._bio_segment(0.0)
             if segment is not None:
                 segments.append(segment)
 
@@ -803,33 +548,6 @@ class HudWindow(QWidget):
                 Span(format_credits(self.state.credits), color=colour, bold=True),
             ],
             glyph_color=colour,
-            lead=lead,
-        )
-
-    def _alert_segment(self, lead: float) -> Segment:
-        cfg = self.config.overlay
-        alert = self._alert
-        assert alert is not None
-        color = cfg.accent if alert.confidence is not Confidence.POSSIBLE else cfg.foreground
-        spans = [
-            Span(f"{alert.title}", color=color, bold=True),
-            Span(f"  {format_credits(alert.value)}", color=color, bold=True),
-        ]
-        if alert.bonus_applies and alert.payout > alert.value:
-            spans.append(Span(" ×5 → ", color=cfg.foreground, dim=0.75))
-            spans.append(Span(format_credits(alert.payout), color=cfg.success, bold=True))
-        if alert.confidence is not Confidence.CONFIRMED:
-            spans.append(
-                Span(f" {CONFIDENCE_LABEL[alert.confidence]}", color=cfg.foreground, dim=0.7)
-            )
-        if alert.body:
-            spans.append(
-                Span(f" · {alert.body}", color=cfg.foreground, dim=0.75, elastic=True)
-            )
-        return Segment(
-            glyph=CONFIDENCE_GLYPH.get(alert.confidence, "star") if cfg.show_glyphs else None,
-            spans=spans,
-            glyph_color=color,
             lead=lead,
         )
 
@@ -906,69 +624,6 @@ class HudWindow(QWidget):
             glyph="planet" if cfg.show_glyphs else None,
             spans=spans,
             glyph_color=cfg.foreground,
-            lead=lead,
-        )
-
-    def _fss_segment(self, lead: float) -> Segment | None:
-        system = self.state.system
-        if not system.name:
-            return None
-        cfg = self.config.overlay
-        percent = system.progress_percent
-        color = cfg.success if percent >= 99.5 else cfg.foreground
-        return Segment(
-            glyph="radar" if cfg.show_glyphs else None,
-            spans=[
-                Span(f"{cfg.labels.fss} ", color=cfg.foreground, dim=0.7),
-                Span(f"{percent:.0f}%", color=color, bold=True),
-            ],
-            glyph_color=color,
-            lead=lead,
-        )
-
-    def _bio_segment(self, lead: float) -> Segment | None:
-        system = self.state.system
-        if not system.name:
-            return None
-        cfg = self.config.overlay
-        total = system.bio_signal_total
-        spans: list[Span] = [
-            Span(f"{cfg.labels.bio} ", color=cfg.foreground, dim=0.7),
-        ]
-        if total:
-            spans.append(Span(f"{total}", color=cfg.foreground, bold=True))
-            if system.bio_body_count > 1:
-                spans.append(
-                    Span(
-                        f" ({system.bio_body_count} {cfg.labels.bio_body})",
-                        color=cfg.foreground,
-                        dim=0.6,
-                    )
-                )
-        else:
-            spans.append(Span("0", color=cfg.foreground, dim=0.55))
-
-        glyph = "bio"
-        glyph_color = cfg.foreground
-        if system.best_confidence is not Confidence.NONE:
-            glyph = CONFIDENCE_GLYPH.get(system.best_confidence, "star")
-            glyph_color = (
-                cfg.success if system.best_confidence is Confidence.CONFIRMED else cfg.accent
-            )
-            prefix = (
-                "" if system.best_confidence is Confidence.CONFIRMED else cfg.labels.at_least
-            )
-            label = system.best_species or system.best_genus or system.best_label
-            spans.append(
-                Span(f"  {prefix}{format_credits(system.best_value)}", color=glyph_color, bold=True)
-            )
-            if label:
-                spans.append(Span(f" {label}", color=cfg.foreground, dim=0.8))
-
-        return Segment(
-            glyph=glyph if cfg.show_glyphs else None,
-            spans=spans,
-            glyph_color=glyph_color,
             lead=lead,
         )
 
@@ -1274,16 +929,6 @@ class HudWindow(QWidget):
                 )
                 painter.drawRoundedRect(bar, bar.width() / 2.0, bar.width() / 2.0)
 
-            # The alert outline belongs to the row that carries the alert.
-            if row.kind == "primary" and self._alert is not None:
-                pulse = 0.55 + 0.45 * math.sin(_monotonic() * 6.0)
-                accent = QColor(cfg.accent)
-                accent.setAlphaF(min(1.0, 0.45 + 0.55 * pulse))
-                pen = QPen(accent)
-                pen.setWidthF(1.4)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRoundedRect(rect, radius, radius)
 
             cap = cap_height(style.metrics)
             baseline = y + (plate_height + cap) / 2.0
@@ -1324,7 +969,6 @@ class HudWindow(QWidget):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._topmost_timer.stop()
         self._screen_timer.stop()
-        self._animation_timer.stop()
         super().closeEvent(event)
 
 

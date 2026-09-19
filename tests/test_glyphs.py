@@ -57,7 +57,6 @@ from elite_hud.config import (
     VALID_STATUS_SEGMENTS,
     Config,
 )
-from elite_hud.exobiology import ExobiologyTable
 from elite_hud.overlay import icons
 from elite_hud.state import GameState
 
@@ -151,7 +150,7 @@ class EverySegmentTests(unittest.TestCase):
 
     def _populated_state(self) -> GameState:
         config = Config()
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         for event in (
             {"event": "LoadGame", "Commander": "Tester", "GameMode": "Open",
              "Credits": 3_322_947_321},

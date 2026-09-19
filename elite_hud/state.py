@@ -12,16 +12,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import jump_range, ranks
-from .exobiology import Confidence, ExobiologyTable, Genus, Species
+from . import jump_range
 from .carriers import CarrierBook
-from .cartography import CartographyHold, is_sellable_body
 from .crime import CrimeRecord
-from .shopping import ShoppingList
 from .ships import ShipNames
-from .footfall import BodySurvey, FootfallPolicy
-from .materials import MaterialTable
-from .unsold import UnsoldData
 
 log = logging.getLogger(__name__)
 
@@ -53,25 +47,6 @@ def utcnow() -> datetime:
 
 
 @dataclass(slots=True)
-class BodyBio:
-    """Exobiology knowledge about a single body of the current system."""
-
-    body_id: int
-    name: str
-    signals: int = 0
-    genus_keys: list[str] = field(default_factory=list)
-    species_keys: list[str] = field(default_factory=list)
-
-    def add_genus(self, key: str) -> None:
-        if key and key not in self.genus_keys:
-            self.genus_keys.append(key)
-
-    def add_species(self, key: str) -> None:
-        if key and key not in self.species_keys:
-            self.species_keys.append(key)
-
-
-@dataclass(slots=True)
 class SystemState:
     """Everything the HUD shows about the system the commander is in."""
 
@@ -84,18 +59,6 @@ class SystemState:
     scanned_bodies: int = 0
     #: BodyIDs already counted towards ``scanned_bodies`` in this system
     scanned_ids: set[int] = field(default_factory=set)
-    bodies: dict[int, BodyBio] = field(default_factory=dict)
-    #: Landing and biology knowledge per BodyID, for first-footfall calls.
-    surveys: dict[int, "BodySurvey"] = field(default_factory=dict)
-
-    #: highest-confidence valuable organic found in this system
-    best_confidence: Confidence = Confidence.NONE
-    best_value: int = 0
-    best_label: str = ""
-    best_body: str = ""
-    best_genus: str = ""
-    best_species: str = ""
-
     @property
     def progress_percent(self) -> float:
         if self.fss_all_found:
@@ -106,14 +69,6 @@ class SystemState:
             return max(0.0, min(1.0, self.scanned_bodies / self.body_count)) * 100.0
         return 0.0
 
-    @property
-    def bio_signal_total(self) -> int:
-        return sum(b.signals for b in self.bodies.values())
-
-    @property
-    def bio_body_count(self) -> int:
-        return sum(1 for b in self.bodies.values() if b.signals > 0)
-
     def clear(self) -> None:
         self.name = ""
         self.address = 0
@@ -123,14 +78,6 @@ class SystemState:
         self.fss_all_found = False
         self.scanned_bodies = 0
         self.scanned_ids.clear()
-        self.bodies.clear()
-        self.surveys.clear()
-        self.best_confidence = Confidence.NONE
-        self.best_value = 0
-        self.best_label = ""
-        self.best_body = ""
-        self.best_genus = ""
-        self.best_species = ""
 
 
 
@@ -269,80 +216,6 @@ class CarrierState:
 
 
 @dataclass(slots=True)
-class Announcement:
-    """Something worth telling the commander about, beyond a bio alert."""
-
-    #: "rank" | "footfall" | "docking" | "material"
-    kind: str
-    title: str
-    detail: str = ""
-    #: optional numeric payload, e.g. the new rank index
-    value: int = 0
-    #: optional glyph name for the notification
-    glyph: str = ""
-    #: optional folding identity, when ``detail`` is display text rather than
-    #: something that identifies the notification
-    key: str = ""
-    #: override colour role: "accent" | "success" | "danger" | "foreground"
-    tone: str = "accent"
-    at: datetime = field(default_factory=utcnow)
-
-
-@dataclass(slots=True)
-class FactionStatus:
-    """What the current system says about a faction we are following.
-
-    The journal only carries a faction list for systems that have a population:
-    across the journals this was built against, all 92 jump events without a
-    faction list were systems with no population at all. So an empty list is not
-    "no data yet", it is "nobody lives here", and the HUD hides the segment
-    rather than showing a stale one from the previous system.
-    """
-
-    #: The name we were asked to follow, as configured.
-    wanted: str = ""
-    #: The system's own name for it, once matched.
-    matched: str = ""
-    found: bool = False
-    controlling: bool = False
-    #: 0.0-1.0 as the journal reports it.
-    influence: float = 0.0
-    #: Standing with that faction, if the journal carries it.
-    reputation: float | None = None
-    #: FactionState, e.g. "None", "Boom".
-    state: str = ""
-    system: str = ""
-    #: The current system has factions at all.
-    inhabited: bool = False
-
-    @property
-    def percent(self) -> int:
-        return int(round(self.influence * 100))
-
-    def matches(self, name: str, mode: str = "contains") -> bool:
-        """Whether a journal faction name is the one we are following."""
-        wanted = (self.wanted or "").strip().casefold()
-        if not wanted:
-            return False
-        candidate = (name or "").strip().casefold()
-        if not candidate:
-            return False
-        if mode == "exact":
-            return candidate == wanted
-        return wanted in candidate
-
-    def clear(self) -> None:
-        self.matched = ""
-        self.found = False
-        self.controlling = False
-        self.influence = 0.0
-        self.reputation = None
-        self.state = ""
-        self.system = ""
-        self.inhabited = False
-
-
-@dataclass(slots=True)
 class JumpPlan:
     """Where the commander is going next.
 
@@ -392,39 +265,12 @@ class JumpPlan:
         self.route.clear()
 
 
-@dataclass(slots=True)
-class Alert:
-    """A user-visible notification raised by a journal event."""
-
-    key: str
-    title: str
-    detail: str
-    value: int
-    confidence: Confidence
-    system: str
-    body: str
-    genus: str = ""
-    species: str = ""
-    body_id: int = 0
-    at: datetime = field(default_factory=utcnow)
-    #: ``ScanOrganic.WasLogged`` was False, so the base+4x bonus applies
-    bonus_applies: bool = False
-    #: expected payout once the bonus is taken into account (0 = unknown)
-    payout: int = 0
-
-
 # ---------------------------------------------------------------------------
 # main state machine
 # ---------------------------------------------------------------------------
 
 #: `CarrierJumpRequest` in current builds carries `DepartureTime`; older builds
 #: only carried the request, and the carrier then spools up for this long.
-
-#: Selling a species that was never logged in this galactic region pays
-#: base + 4x base, i.e. five times the base value.
-FIRST_LOGGED_MULTIPLIER = 5
-
-_JOURNAL_BIOLOGY_CATEGORY = "$Codex_Category_Biology;"
 
 # Events the HUD deliberately ignores: FSSSignalDiscovered (other signal types),
 # SAAScanComplete, NavBeaconScan, SellExplorationData, Materials, Rank, ... .
@@ -434,43 +280,24 @@ _JOURNAL_BIOLOGY_CATEGORY = "$Codex_Category_Biology;"
 class GameState:
     def __init__(
         self,
-        exobiology: ExobiologyTable,
         *,
-        value_threshold: int = 7_000_000,
         carrier_spool_seconds: float = DEFAULT_CARRIER_SPOOL_SECONDS,
         carrier_cooldown_seconds: float = DEFAULT_CARRIER_COOLDOWN_SECONDS,
         carrier_jump_seconds: float = DEFAULT_CARRIER_JUMP_SECONDS,
         carrier_cancel_seconds: float = DEFAULT_CARRIER_CANCEL_SECONDS,
         carrier_ready_display_seconds: float = CARRIER_READY_DISPLAY_SECONDS,
-        footfall: FootfallPolicy | None = None,
-        footfall_label: str = "Первый след",
-        material_table: MaterialTable | None = None,
-        material_rarity: bool = True,
-        faction_name: str = "",
-        faction_match: str = "contains",
         ship_names: ShipNames | None = None,
         ship_cache: Path | None = None,
         carrier_book: CarrierBook | None = None,
         carrier_cache: Path | None = None,
-        material_enabled: bool = True,
-        material_notify: bool = True,
-        rarity_label: str = "Редкость",
-        total_label: str = "Всего",
     ) -> None:
-        self.exobiology = exobiology
-        self.value_threshold = value_threshold
-        self.footfall = footfall or FootfallPolicy()
-        #: Sampled or earned but not yet banked.
-        self.unsold = UnsoldData()
         #: Where the commander is heading next.
         self.jump_plan = JumpPlan()
         #: Fines owed and notoriety.
         self.crime = CrimeRecord()
-        #: Exploration data carried but not yet sold.
-        self.cartography = CartographyHold()
-        #: Commodities the open missions still want, and where to buy them.
-        self.shopping = ShoppingList()
         #: Ship model names, learned from the journal (see elite_hud/ships.py).
+        # `is not None`, not `or`: these objects define __len__, so an empty one
+        # is falsy and would be silently replaced.
         self.ship_names = (
             ship_names if ship_names is not None else ShipNames(ship_cache)
         )
@@ -486,38 +313,10 @@ class GameState:
         self.cargo_capacity = 0
         #: Tonnes currently in the hold.
         self.cargo_count = 0
-        #: The faction we are following, in the current system.
-        self.faction = FactionStatus(wanted=faction_name)
-        self.faction_match = faction_match
         #: Live values that only Status.json reports.
         self.legal_state = ""
         #: True while the status file is the source of the balance.
         self.status_live = False
-        #: Incremented whenever the balance moves, for the ambilight flashes.
-        #: A counter rather than a flag so a change cannot be missed between two
-        #: reads of it.
-        self.balance_changes = 0
-        #: Rarity and canonical names; the journal supplies localised names.
-        # `is not None`, not `or`: these objects define __len__, so an empty one
-        # is falsy and would be silently replaced -- which is how a CarrierBook
-        # built with a cache path was discarded in favour of one without, and
-        # nothing was ever written.
-        self.material_table = (
-            material_table if material_table is not None else MaterialTable()
-        )
-        #: Journal symbol (lowercase) -> how many are held.
-        self.holdings: dict[str, int] = {}
-        #: A Materials event has been seen, so the hold is known rather than assumed.
-        self.materials_known = False
-        #: Whether to mention rarity in notifications.
-        self.material_rarity = material_rarity
-        self.material_enabled = material_enabled
-        self.material_notify = material_notify
-        #: Text of the first-footfall notification; config supplies the real one.
-        self.footfall_label = footfall_label
-        #: Labels for the material notification; config supplies the real ones.
-        self.rarity_label = rarity_label
-        self.total_label = total_label
         self.carrier_spool_seconds = carrier_spool_seconds
         self.carrier_cooldown_seconds = carrier_cooldown_seconds
         self.carrier_jump_seconds = carrier_jump_seconds
@@ -541,9 +340,7 @@ class GameState:
         self.group_name: str = ""
 
         #: Rank index per track, e.g. {"Combat": 3}.
-        self.ranks: dict[str, int] = {}
         #: Percent towards the next step of each track, 0-100.
-        self.rank_progress: dict[str, int] = {}
 
         self.ship_ident: str = ""
         self.ship_name: str = ""
@@ -566,14 +363,12 @@ class GameState:
         self.missions_known = False
 
         #: Announcements raised by the events folded in so far.
-        self.announcements: list[Announcement] = []
 
         #: (system_address, body_id, organic key) -> best confidence alerted so far
-        self._alerted: dict[tuple[int, int, str], Confidence] = {}
 
     # -- public API --------------------------------------------------------
 
-    def apply(self, event: dict) -> list[Alert]:
+    def apply(self, event: dict) -> None:
         """Fold one journal event into the state; return any new alerts."""
         name = event.get("event")
         if not isinstance(name, str):
@@ -591,11 +386,6 @@ class GameState:
             log.exception("failed to process %s", name)
             return []
         return alerts
-
-    def drain_announcements(self) -> list[Announcement]:
-        """Hand over the announcements queued since the last call."""
-        pending, self.announcements = self.announcements, []
-        return pending
 
     def reset(self) -> None:
         self.system.clear()
@@ -643,48 +433,6 @@ class GameState:
             all_fines=bool(event.get("AllFines")),
         )
 
-    # -- factions ----------------------------------------------------------
-
-    def _apply_factions(self, event: dict) -> None:
-        """Record the followed faction's standing in the system just entered."""
-        status = self.faction
-        status.clear()
-        status.wanted = self.faction.wanted
-        status.system = str(event.get("StarSystem") or "")
-        if not status.wanted:
-            return
-
-        factions = event.get("Factions")
-        if not isinstance(factions, list) or not factions:
-            # No list means an uninhabited system, not missing data.
-            return
-        status.inhabited = True
-
-        controller = ""
-        system_faction = event.get("SystemFaction")
-        if isinstance(system_faction, dict):
-            controller = str(system_faction.get("Name") or "")
-
-        for raw in factions:
-            if not isinstance(raw, dict):
-                continue
-            name = str(raw.get("Name") or "")
-            if not status.matches(name, self.faction_match):
-                continue
-            status.matched = name
-            status.found = True
-            status.controlling = bool(controller) and name == controller
-            influence = raw.get("Influence")
-            if isinstance(influence, (int, float)) and not isinstance(influence, bool):
-                status.influence = float(influence)
-            reputation = raw.get("MyReputation")
-            if isinstance(reputation, (int, float)) and not isinstance(reputation, bool):
-                status.reputation = float(reputation)
-            status.state = str(raw.get("FactionState") or "")
-            break
-
-    # -- status file -------------------------------------------------------
-
     def apply_status(self, snapshot) -> None:
         """Fold in a Status.json snapshot.
 
@@ -693,8 +441,6 @@ class GameState:
         already gave us from the last LoadGame.
         """
         if snapshot.balance is not None:
-            if self.credits is not None and snapshot.balance != self.credits:
-                self.balance_changes += 1
             self.credits = snapshot.balance
             self.status_live = True
         elif snapshot.empty and self.status_live:
@@ -741,175 +487,6 @@ class GameState:
             self.game_mode = mode
             if mode == "Group":
                 self.group_name = str(event.get("Group") or self.group_name)
-
-    def _on_Rank(self, event: dict) -> None:
-        for track in ranks.TRACKS:
-            value = event.get(track)
-            if isinstance(value, int):
-                self.ranks[track] = value
-
-    def _on_Promotion(self, event: dict) -> None:
-        """Fires when a rank is gained; the fields name the tracks that moved."""
-        for track in ranks.ANNOUNCED:
-            value = event.get(track)
-            if not isinstance(value, int):
-                continue
-            # The field carries the NEW index, so it is also the freshest source
-            # for the rank itself -- Rank is only written at startup.
-            previous = self.ranks.get(track)
-            self.ranks[track] = value
-            self.rank_progress[track] = 0
-            if previous == value:
-                continue
-            index = value
-            ladder = ranks.ladder(track)
-            title = ladder.name(index) if ladder else str(index)
-            self.announcements.append(
-                Announcement(
-                    kind="rank",
-                    title=title,
-                    detail=track,
-                    value=index,
-                    glyph="star",
-                    tone="success",
-                )
-            )
-
-    def _on_Progress(self, event: dict) -> None:
-        for track in ranks.TRACKS:
-            value = event.get(track)
-            if isinstance(value, int):
-                self.rank_progress[track] = value
-
-    # -- materials ---------------------------------------------------------
-
-    def _on_Materials(self, event: dict) -> None:
-        """Seed the whole hold; this event reports everything at once."""
-        if not self.material_enabled:
-            return
-        for kind in ("Raw", "Manufactured", "Encoded"):
-            items = event.get(kind)
-            if not isinstance(items, list):
-                continue
-            for raw in items:
-                if not isinstance(raw, dict):
-                    continue
-                symbol = self.material_table.normalise(str(raw.get("Name") or ""))
-                if not symbol:
-                    continue
-                count = raw.get("Count")
-                self.holdings[symbol] = int(count) if isinstance(count, int) else 0
-        self.materials_known = True
-
-    def _on_MaterialCollected(self, event: dict) -> None:
-        if not self.material_enabled:
-            return
-        symbol = self.material_table.normalise(str(event.get("Name") or ""))
-        if not symbol:
-            return
-        count = event.get("Count")
-        count = int(count) if isinstance(count, int) else 1
-        self.holdings[symbol] = self.holdings.get(symbol, 0) + count
-        if self.material_notify:
-            self._announce_material(
-                symbol, count, str(event.get("Name_Localised") or "")
-            )
-
-    def _on_MaterialDiscarded(self, event: dict) -> None:
-        if not self.material_enabled:
-            return
-        symbol = self.material_table.normalise(str(event.get("Name") or ""))
-        if not symbol:
-            return
-        count = event.get("Count")
-        count = int(count) if isinstance(count, int) else 0
-        self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - count)
-
-    def _on_MaterialTrade(self, event: dict) -> None:
-        """A trader swaps one material for another, at a rate.
-
-        The nested objects use ``Material`` and ``Quantity``, not ``Name`` and
-        ``Count``: reading the latter made every trade a silent no-op, and the
-        holdings then stayed wrong for the rest of the session. An early test
-        asserted the invented keys on both sides, so it passed against the bug.
-        """
-        paid = event.get("Paid")
-        if isinstance(paid, dict):
-            self._consume_material(paid)
-        received = event.get("Received")
-        if isinstance(received, dict):
-            symbol = self._material_symbol(received)
-            amount = self._material_amount(received)
-            if symbol and amount:
-                self.holdings[symbol] = self.holdings.get(symbol, 0) + amount
-
-    @staticmethod
-    def _material_symbol(entry: dict) -> str:
-        """The name field differs by event: Material, Name, or a localised one."""
-        return str(entry.get("Material") or entry.get("Name") or "")
-
-    @staticmethod
-    def _material_amount(entry: dict) -> int:
-        for key in ("Quantity", "Count", "Amount"):
-            value = entry.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
-                return value
-        return 0
-
-    def _on_Synthesis(self, event: dict) -> None:
-        materials = event.get("Materials")
-        if isinstance(materials, list):
-            for raw in materials:
-                if isinstance(raw, dict):
-                    self._consume_material(raw)
-
-    def _on_EngineeringCraft(self, event: dict) -> None:
-        # The event names ingredients only in some versions; both spellings are
-        # handled because getting this wrong would silently inflate the hold.
-        for key in ("Ingredients", "Materials"):
-            items = event.get(key)
-            if isinstance(items, list):
-                for raw in items:
-                    if isinstance(raw, dict):
-                        self._consume_material(raw)
-
-    def _consume_material(self, entry: dict) -> None:
-        symbol = self.material_table.normalise(self._material_symbol(entry))
-        if not symbol:
-            return
-        amount = self._material_amount(entry)
-        self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - amount)
-
-    def _announce_material(self, symbol: str, count: int, localised: str) -> None:
-        """Queue the pickup notification, e.g. "+1 Сера (Редкость: 1)"."""
-        material = self.material_table.get(symbol)
-        name = self.material_table.display_name(symbol, localised)
-        rarity = material.rarity if material else 0
-        title = f"+{count} {name}"
-        if self.material_rarity and rarity:
-            title = f"{title} ({self.rarity_label}: {rarity})"
-        # Without a Materials event the hold is unknown, not empty: the journal
-        # only reports the whole hold at session start, so a pickup seen after a
-        # history-less start would otherwise announce "Всего: 1" for a hold of
-        # hundreds. The guard existed but nothing consulted it.
-        detail = ""
-        if self.materials_known:
-            detail = f"{self.total_label}: {self.holdings.get(symbol, 0)}"
-        self.announcements.append(
-            Announcement(
-                kind="material",
-                title=title,
-                detail=detail,
-                # Folded by material, not by the running total: keying on the
-                # total meant two different materials with the same count
-                # merged into one line claiming "x2", while repeated pickups of
-                # one material never folded at all.
-                key=symbol,
-                value=self.holdings.get(symbol, 0),
-                glyph="gem",
-                tone="accent",
-            )
-        )
 
     def _on_Commander(self, event: dict) -> None:
         self.commander = str(event.get("Name") or self.commander)
@@ -988,42 +565,18 @@ class GameState:
                 int(m["MissionID"]) for m in active
                 if isinstance(m, dict) and isinstance(m.get("MissionID"), int)
             }
-            for mission in active:
-                if isinstance(mission, dict):
-                    self._remember_cargo(mission)
-
-    def _remember_cargo(self, mission: dict) -> None:
-        """Note the commodity a mission wants, if it wants one.
-
-        Only collection and donation missions carry a Commodity; couriers and
-        the like do not, and are simply not part of the shopping list.
-        """
-        mission_id = mission.get("MissionID")
-        commodity = mission.get("Commodity")
-        if not isinstance(mission_id, int) or not commodity:
-            return
-        count = mission.get("Count")
-        self.shopping.add(
-            mission_id,
-            str(commodity),
-            str(mission.get("Commodity_Localised") or ""),
-            count if isinstance(count, int) and not isinstance(count, bool) else 1,
-            str(mission.get("DestinationSystem") or ""),
-        )
 
     def _on_MissionAccepted(self, event: dict) -> None:
         self.missions_known = True
         mission_id = event.get("MissionID")
         if isinstance(mission_id, int):
             self.active_missions.add(mission_id)
-        self._remember_cargo(event)
 
     def _close_mission(self, event: dict) -> None:
         self.missions_known = True
         mission_id = event.get("MissionID")
         if isinstance(mission_id, int):
             self.active_missions.discard(mission_id)
-            self.shopping.remove(mission_id)
 
     _on_MissionCompleted = _close_mission
     _on_MissionAbandoned = _close_mission
@@ -1038,8 +591,6 @@ class GameState:
         self.system.clear()
         self.system.name = name
         self.system.address = address
-        # Alerts are scoped per system; drop the previous system's history.
-        self._alerted = {k: v for k, v in self._alerted.items() if k[0] == address}
         # Arriving at the target consumes a leg of the plan.
         self.jump_plan.arrive(name)
 
@@ -1070,7 +621,6 @@ class GameState:
 
     def _on_FSDJump(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
-        self._apply_factions(event)
         level = event.get("FuelLevel")
         if isinstance(level, (int, float)):
             self.fuel_level = float(level)
@@ -1078,14 +628,8 @@ class GameState:
 
     def _on_Location(self, event: dict) -> None:
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
-        self._apply_factions(event)
 
-    def _on_CarrierJump(self, event: dict) -> list[Alert] | None:
-        # A carrier ride lands the commander in a new system, so the faction
-        # standing has to be re-read here too. Without this the HUD kept showing
-        # the previous system's faction, influence and controlling colour until
-        # something else happened to refresh it.
-        self._apply_factions(event)
+    def _on_CarrierJump(self, event: dict) -> None:
         # This event only exists when the commander was docked at the time, and
         # its timestamp is the arrival -- which is the jump's duration later than
         # the departure the cooldown is really measured from.
@@ -1140,81 +684,6 @@ class GameState:
     # -- body signals ------------------------------------------------------
 
     @staticmethod
-    def _bio_count(signals: object) -> int:
-        if not isinstance(signals, list):
-            return 0
-        total = 0
-        for signal in signals:
-            if not isinstance(signal, dict):
-                continue
-            kind = str(signal.get("Type") or "")
-            if "Biological" not in kind:
-                continue
-            count = signal.get("Count")
-            total += int(count) if isinstance(count, int) else 1
-        return total
-
-    def _body(self, body_id: int, name: str) -> BodyBio:
-        entry = self.system.bodies.get(body_id)
-        if entry is None:
-            entry = BodyBio(body_id=body_id, name=name)
-            self.system.bodies[body_id] = entry
-        elif name and not entry.name:
-            entry.name = name
-        return entry
-
-    def _on_FSSBodySignals(self, event: dict) -> list[Alert] | None:
-        return self._record_signals(event)
-
-    def _on_SAASignalsFound(self, event: dict) -> list[Alert] | None:
-        return self._record_signals(event, with_genuses=True)
-
-    def _record_signals(self, event: dict, *, with_genuses: bool = False) -> list[Alert]:
-        # Signal events carry SystemAddress; stale ones from a system we have
-        # already left must not pollute the current scan.
-        address = int(event.get("SystemAddress") or 0)
-        if self.system.address and address and address != self.system.address:
-            return None
-        body_id = event.get("BodyID")
-        if not isinstance(body_id, int):
-            return None
-        body = self._body(body_id, str(event.get("BodyName") or ""))
-
-        count = self._bio_count(event.get("Signals"))
-        if count > body.signals:
-            body.signals = count
-
-        # Biology is reported before the body itself is resolved, so this is
-        # remembered rather than acted on: the landing data arrives with Scan,
-        # and the call needs both.
-        survey = self._survey(body_id, body.name)
-        survey.observe_signals(event.get("Signals"), genuses=event.get("Genuses") or ())
-        self._maybe_announce_footfall(survey)
-
-        alerts: list[Alert] = []
-        if not with_genuses:
-            return None
-
-        genuses = event.get("Genuses")
-        if isinstance(genuses, list):
-            for raw in genuses:
-                if not isinstance(raw, dict):
-                    continue
-                key = raw.get("Genus") or raw.get("Genus_Localised") or ""
-                genus = self.exobiology.genus(str(key))
-                if genus is None:
-                    log.debug("unknown genus %r", key)
-                    continue
-                if not genus.sellable:
-                    continue
-                body.add_genus(genus.key)
-                alerts.extend(self._assess_genus(body, genus))
-
-        self._recompute_best()
-        return alerts or None
-
-    # -- scans -------------------------------------------------------------
-
     def _on_Scan(self, event: dict) -> None:
         address = int(event.get("SystemAddress") or 0)
         if self.system.address and address and address != self.system.address:
@@ -1241,280 +710,6 @@ class GameState:
         self.system.scanned_bodies += 1
 
     # -- first footfall ----------------------------------------------------
-
-    def _survey(self, body_id: int, name: str = "") -> BodySurvey:
-        """The footfall record for a body of the current system."""
-        survey = self.system.surveys.get(body_id)
-        if survey is None:
-            survey = BodySurvey(body_id=body_id, name=name, system=self.system.name)
-            self.system.surveys[body_id] = survey
-        elif name and not survey.name:
-            survey.name = name
-        return survey
-
-    def _maybe_announce_footfall(
-        self, survey: BodySurvey, scan_event: dict | None = None
-    ) -> None:
-        """Announce an un-walked, landable, worthwhile body -- exactly once.
-
-        Called from both the scan and the signal paths because the two arrive in
-        either order: ``FSSBodySignals`` precedes ``Scan`` for 344 of the 346
-        bodies in the journals this was built against, but a DSS pass on an
-        already-scanned body reports its biology afterwards.
-
-        Queues on ``self.announcements`` rather than returning, because the
-        dispatcher treats a handler's return value as bio alerts.
-        """
-        if scan_event is not None:
-            survey.observe_scan(scan_event)
-        if not self.footfall.admits(survey):
-            return
-        survey.announced = True
-        detail = survey.name or f"#{survey.body_id}"
-        suffix = survey.describe()
-        if suffix:
-            detail = f"{detail} · {suffix}"
-        self.announcements.append(
-            Announcement(
-                kind="footfall",
-                title=self.footfall_label,
-                detail=detail,
-                value=survey.bio_signals,
-                glyph="leaf",
-                tone="success",
-            )
-        )
-
-    # -- organics ----------------------------------------------------------
-
-    def _on_ScanOrganic(self, event: dict) -> list[Alert]:
-        body_id = event.get("Body")
-        species = self.exobiology.species(
-            event.get("Species") or event.get("Species_Localised")
-        )
-        genus = self.exobiology.genus(event.get("Genus") or event.get("Genus_Localised"))
-        if genus is None and species is not None:
-            genus = self.exobiology.genus(species.name.split(" ")[0])
-
-        body: BodyBio | None = None
-        if isinstance(body_id, int):
-            body = self._body(body_id, "")
-            if genus is not None:
-                body.add_genus(genus.key)
-            if species is not None:
-                body.add_species(species.key)
-
-        if species is None:
-            return []
-
-        # `WasLogged` is the only direct signal about the base+4x bonus.
-        was_logged = event.get("WasLogged")
-        bonus = was_logged is False
-
-        # Only the final Analyse pass puts a sample in the hold; the Log and
-        # Sample passes are the earlier steps of the same sampling.
-        if event.get("ScanType") == "Analyse":
-            self.unsold.add_sample(
-                species.name, species.value, first_logged=bonus
-            )
-
-        confidence = self.exobiology.assess_species(species, self.value_threshold)
-        alerts: list[Alert] = []
-        if confidence is not Confidence.NONE and body is not None:
-            alerts = self._raise(body, species.key, confidence, species, genus, bonus=bonus)
-
-        self._recompute_best()
-        return alerts
-
-    # -- unsold value ------------------------------------------------------
-
-    def _on_SAAScanComplete(self, event: dict) -> None:
-        """A surface scan; mapped bodies are worth more, so they are tracked."""
-        body_id = event.get("BodyID")
-        if isinstance(body_id, int):
-            self.cartography.add_mapping(self.system.name, body_id)
-
-    def _on_MultiSellExplorationData(self, event: dict) -> None:
-        """Selling at Universal Cartographics empties the whole hold."""
-        self.cartography.clear()
-
-    def _on_SellExplorationData(self, event: dict) -> None:
-        # The single-system form of the same sale.
-        self.cartography.clear()
-
-    def _on_SellOrganicData(self, event: dict) -> None:
-        """A sale empties the biological hold."""
-        data = event.get("BioData")
-        credits = 0
-        count = 0
-        if isinstance(data, list):
-            for raw in data:
-                if not isinstance(raw, dict):
-                    continue
-                credits += int(raw.get("Value") or 0) + int(raw.get("Bonus") or 0)
-                count += 1
-        self.unsold.clear_bio(credits=credits, samples=count)
-        log.info("sold %d organic samples for %s cr", count, f"{credits:,}")
-
-    def _on_Bounty(self, event: dict) -> None:
-        # Read Reward directly rather than with `or`: a zero reward is
-        # meaningful here, and `or` would discard it as falsy.
-        reward = event.get("Reward")
-        if reward is None:
-            reward = event.get("TotalReward")
-        if not isinstance(reward, int) or isinstance(reward, bool):
-            return
-        if reward <= 0:
-            # A zero reward is not a payout: it is a bounty issued against the
-            # commander, which the journal reports through the same event.
-            self.crime.add_bounty(0)
-            return
-        self.unsold.add_voucher("bounty", reward)
-
-    def _on_FactionKillBond(self, event: dict) -> None:
-        reward = event.get("Reward")
-        if isinstance(reward, int):
-            self.unsold.add_voucher("bond", reward)
-
-    def _on_RedeemVoucher(self, event: dict) -> None:
-        amount = event.get("Amount")
-        self.unsold.redeem(
-            str(event.get("Type") or ""), amount if isinstance(amount, int) else 0
-        )
-
-    def _on_Died(self, event: dict) -> None:
-        """Dying loses unsold samples and vouchers; say so rather than hide it."""
-        lost = self.unsold.bio_credits + self.unsold.voucher_total
-        if lost:
-            log.info("died holding %s cr of unsold data", f"{lost:,}")
-        self.unsold.clear_bio()
-        self.unsold.vouchers.clear()
-
-    def _on_CodexEntry(self, event: dict) -> list[Alert]:
-        category = str(event.get("Category") or "")
-        if category and category != _JOURNAL_BIOLOGY_CATEGORY:
-            return []
-        # Codex entries can arrive for a system we have already left.
-        address = int(event.get("SystemAddress") or 0)
-        if self.system.address and address and address != self.system.address:
-            return []
-        # Both spellings are tried in turn rather than with `or`: the localised
-        # name is a usable fallback when the symbol is one this table cannot
-        # resolve, and `or` never reached it while Name was present.
-        species = self.exobiology.species(event.get("Name"))
-        if species is None:
-            species = self.exobiology.species(event.get("Name_Localised"))
-        if species is None:
-            return []
-
-        body_id = event.get("BodyID")
-        body: BodyBio | None = None
-        if isinstance(body_id, int):
-            body = self._body(body_id, "")
-            body.add_species(species.key)
-            genus = self.exobiology.genus(species.name.split(" ")[0])
-            if genus is not None:
-                body.add_genus(genus.key)
-
-        confidence = self.exobiology.assess_species(species, self.value_threshold)
-        alerts = self._raise(body, species.key, confidence, species, None) if confidence is not Confidence.NONE else []
-        self._recompute_best()
-        return alerts
-
-    # -- assessment helpers ------------------------------------------------
-
-    def _assess_genus(self, body: BodyBio, genus: Genus) -> list[Alert]:
-        confidence = self.exobiology.assess_genus(genus, self.value_threshold)
-        if confidence is Confidence.NONE:
-            return []
-        return self._raise(body, genus.key, confidence, None, genus)
-
-    def _raise(
-        self,
-        body: BodyBio,
-        organic_key: str,
-        confidence: Confidence,
-        species: Species | None,
-        genus: Genus | None,
-        *,
-        bonus: bool = False,
-    ) -> list[Alert]:
-        dedupe = (self.system.address, body.body_id, organic_key)
-        previous = self._alerted.get(dedupe, Confidence.NONE)
-        if confidence.rank <= previous.rank:
-            return []
-        self._alerted[dedupe] = confidence
-
-        if species is not None:
-            value = species.value
-            label = species.name
-        else:
-            value = genus.max_value if genus else 0
-            label = genus.name if genus else organic_key
-
-        return [
-            Alert(
-                key=f"{self.system.address}:{body.body_id}:{organic_key}",
-                title=label,
-                detail=confidence.value,
-                value=value,
-                confidence=confidence,
-                system=self.system.name,
-                body=body.name,
-                genus=genus.name if genus else "",
-                species=species.name if species else "",
-                body_id=body.body_id,
-                bonus_applies=bonus,
-                payout=value * FIRST_LOGGED_MULTIPLIER if bonus else value,
-            )
-        ]
-
-    def _recompute_best(self) -> None:
-        best_confidence = Confidence.NONE
-        best_value = 0
-        best_label = ""
-        best_body = ""
-        best_genus = ""
-        best_species = ""
-
-        for body in self.system.bodies.values():
-            for key in body.species_keys:
-                species = self.exobiology.species(key)
-                if species is None:
-                    continue
-                confidence = self.exobiology.assess_species(species, self.value_threshold)
-                if confidence is Confidence.NONE:
-                    continue
-                if (confidence.rank, species.value) > (best_confidence.rank, best_value):
-                    best_confidence = confidence
-                    best_value = species.value
-                    best_label = species.name
-                    best_body = body.name
-                    best_species = species.name
-                    best_genus = species.name.split(" ")[0]
-            for key in body.genus_keys:
-                genus = self.exobiology.genus(key)
-                if genus is None:
-                    continue
-                confidence = self.exobiology.assess_genus(genus, self.value_threshold)
-                if confidence is Confidence.NONE:
-                    continue
-                if (confidence.rank, genus.max_value) > (best_confidence.rank, best_value):
-                    best_confidence = confidence
-                    best_value = genus.max_value
-                    best_label = genus.name
-                    best_body = body.name
-                    best_genus = genus.name
-                    best_species = ""
-
-        self.system.best_confidence = best_confidence
-        self.system.best_value = best_value
-        self.system.best_label = best_label
-        self.system.best_body = best_body
-        self.system.best_genus = best_genus
-        self.system.best_species = best_species
-
-    # -- fleet carrier -----------------------------------------------------
 
     def _on_CarrierStats(self, event: dict) -> None:
         self.carriers.observe(event)

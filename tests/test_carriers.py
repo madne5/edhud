@@ -9,7 +9,6 @@ from pathlib import Path
 
 from elite_hud.carriers import CarrierBook, CarrierInfo
 from elite_hud.config import Config
-from elite_hud.exobiology import ExobiologyTable
 from elite_hud.state import GameState
 from elite_hud.status import parse_status
 
@@ -134,7 +133,7 @@ class CarrierBookTests(unittest.TestCase):
 class CarrierStateTests(unittest.TestCase):
     def test_both_carriers_are_tracked(self) -> None:
         config = Config()
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         state.apply(PERSONAL)
         state.apply(SQUADRON)
         self.assertEqual(len(state.carriers.known()), 2)
@@ -147,10 +146,7 @@ class CarrierStateTests(unittest.TestCase):
         """
         cache = Path(tempfile.mkdtemp()) / "carriers.json"
         config = Config()
-        state = GameState(
-            ExobiologyTable(),
-            value_threshold=config.alerts.min_value,
-            carrier_cache=cache,
+        state = GameState(carrier_cache=cache,
         )
         self.assertTrue(state.carriers.persist)
         state.apply(PERSONAL)
@@ -159,8 +155,7 @@ class CarrierStateTests(unittest.TestCase):
     def test_a_ship_cache_passed_by_path_is_not_discarded(self) -> None:
         cache = Path(tempfile.mkdtemp()) / "ships.json"
         config = Config()
-        state = GameState(
-            ExobiologyTable(), value_threshold=config.alerts.min_value, ship_cache=cache
+        state = GameState(ship_cache=cache
         )
         self.assertTrue(state.ship_names.persist)
         state.apply({"event": "ShipyardSwap", "ShipType": "explorer_nx",
@@ -174,7 +169,7 @@ class CarrierStateTests(unittest.TestCase):
         accounted for by nothing in the event.
         """
         config = Config()
-        state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        state = GameState()
         state.apply(PERSONAL)
         info = state.carriers.info(3714982656)
         self.assertNotEqual(info.free_space, info.total_capacity - info.cargo)

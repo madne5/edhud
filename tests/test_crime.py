@@ -6,7 +6,6 @@ import unittest
 
 from elite_hud.config import Config
 from elite_hud.crime import MAX_NOTORIETY, CrimeRecord
-from elite_hud.exobiology import ExobiologyTable
 from elite_hud.state import GameState
 
 #: The Crime section as the journals really carry it.
@@ -117,7 +116,7 @@ class CrimeRecordTests(unittest.TestCase):
 class CrimeStateTests(unittest.TestCase):
     def setUp(self) -> None:
         config = Config()
-        self.state = GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+        self.state = GameState()
 
     def test_statistics_are_read_from_the_journal(self) -> None:
         self.state.apply({"event": "Statistics", "Crime": REAL_CRIME})
@@ -151,25 +150,3 @@ class CrimeStateTests(unittest.TestCase):
     def test_a_commit_crime_without_a_fine_is_harmless(self) -> None:
         self.state.apply({"event": "CommitCrime", "CrimeType": "murder"})
         self.assertEqual(self.state.crime.fines, 0)
-
-    def test_a_zero_reward_bounty_is_a_bounty_against_the_commander(self) -> None:
-        """The same event reports both payouts and prices on your head."""
-        self.state.apply({"event": "Bounty", "Reward": 0, "VictimFaction": "Someone"})
-        self.assertEqual(self.state.crime.session_bounties, 1)
-        self.assertEqual(self.state.crime.session_bounty_value, 0)
-        # And it must not be mistaken for money earned.
-        self.assertEqual(self.state.unsold.voucher_total, 0)
-
-    def test_a_real_reward_is_still_a_voucher(self) -> None:
-        self.state.apply({"event": "Bounty", "Reward": 1000, "VictimFaction": "Pirate"})
-        self.assertEqual(self.state.unsold.voucher_total, 1000)
-        self.assertEqual(self.state.crime.session_bounties, 0)
-
-    def test_a_missing_reward_is_ignored(self) -> None:
-        self.state.apply({"event": "Bounty", "VictimFaction": "Pirate"})
-        self.assertEqual(self.state.unsold.voucher_total, 0)
-        self.assertEqual(self.state.crime.session_bounties, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

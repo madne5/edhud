@@ -8,14 +8,13 @@ import unittest
 from pathlib import Path
 
 from elite_hud.config import Config
-from elite_hud.exobiology import ExobiologyTable
 from elite_hud.state import GameState
 from elite_hud.status import StatusReader, parse_status, read_status
 
 
 def play_state() -> GameState:
     config = Config()
-    return GameState(ExobiologyTable(), value_threshold=config.alerts.min_value)
+    return GameState()
 
 
 class ParseTests(unittest.TestCase):

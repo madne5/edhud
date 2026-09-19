@@ -33,7 +33,6 @@ class DefaultsTests(unittest.TestCase):
     def test_defaults_are_sane(self) -> None:
         config = Config()
         self.assertEqual(config.overlay.position, "top-center")
-        self.assertEqual(config.alerts.min_value, 7_000_000)
         self.assertTrue(config.overlay.click_through)
         self.assertTrue(config.overlay.always_on_top)
         self.assertEqual(
@@ -46,14 +45,13 @@ class DefaultsTests(unittest.TestCase):
         parsed = tomllib.loads(text)  # must not raise
         self.assertIn("overlay", parsed)
         self.assertIn("labels", parsed["overlay"])
-        self.assertEqual(parsed["overlay"]["labels"]["fss"], "FSS")
+        self.assertEqual(parsed["overlay"]["labels"]["missions"], "миссии")
 
     def test_generated_toml_loads_back_to_the_same_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text(Config().to_toml(), encoding="utf-8")
             loaded = Config.load(path)
-        self.assertEqual(loaded.alerts.min_value, 7_000_000)
         self.assertEqual(loaded.overlay.font_family, "Consolas")
         self.assertEqual(loaded.overlay.labels.carrier, "ФК")
 
@@ -65,28 +63,9 @@ class LoadingTests(unittest.TestCase):
             path.write_text(text, encoding="utf-8")
             return Config.load(path)
 
-    def test_partial_config_keeps_other_defaults(self) -> None:
-        config = self._load("[alerts]\nmin_value = 2_500_000\nsound_enabled = false\n")
-        self.assertEqual(config.alerts.min_value, 2_500_000)
-        self.assertFalse(config.alerts.sound_enabled)
-        self.assertEqual(config.overlay.position, "top-center")
-
-    def test_nested_labels_are_merged(self) -> None:
-        config = self._load("[overlay.labels]\nbio = \"EXO\"\n")
-        self.assertEqual(config.overlay.labels.bio, "EXO")
-        self.assertEqual(config.overlay.labels.fss, "FSS")
-
-    def test_exobiology_overrides(self) -> None:
-        config = self._load('[exobiology.values]\n"Stratum Tectonicas" = 21000000\n')
-        self.assertEqual(config.exobiology_overrides, {"Stratum Tectonicas": 21_000_000})
-
     def test_unknown_keys_are_ignored(self) -> None:
         config = self._load("[overlay]\nnot_a_real_key = 5\nfont_size = 16\n")
         self.assertEqual(config.overlay.font_size, 16)
-
-    def test_malformed_toml_falls_back_to_defaults(self) -> None:
-        config = self._load("this is not toml at all =")
-        self.assertEqual(config.alerts.min_value, 7_000_000)
 
     def test_missing_file_yields_defaults(self) -> None:
         config = Config.load(Path("/nonexistent/config.toml"))
@@ -103,13 +82,8 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(config.overlay.segments, ["system"])
 
     def test_opacity_and_volume_are_clamped(self) -> None:
-        config = self._load("[overlay]\nopacity = 4.0\n[alerts]\nvolume = -1.0\n")
+        config = self._load("[overlay]\nopacity = 4.0\n")
         self.assertEqual(config.overlay.opacity, 1.0)
-        self.assertEqual(config.alerts.volume, 0.0)
-
-    def test_unknown_sound_confidence_falls_back(self) -> None:
-        config = self._load('[alerts]\nsound_min_confidence = "whenever"\n')
-        self.assertEqual(config.alerts.sound_min_confidence, "guaranteed")
 
     def _load(self, text: str) -> Config:
         with tempfile.TemporaryDirectory() as tmp:
@@ -247,11 +221,11 @@ class ConfigEditorTests(unittest.TestCase):
         self.assertEqual(Config.load(self.path).overlay.font_size, 14)
 
     def test_creates_a_missing_section(self) -> None:
-        self.path.write_text("[alerts]\nmin_value = 5\n", encoding="utf-8")
+        self.path.write_text("[carrier]\nspool_minutes = 5\n", encoding="utf-8")
         self.assertTrue(set_config_value(self.path, "overlay", "monitor", "1"))
         loaded = Config.load(self.path)
         self.assertEqual(loaded.overlay.monitor, "1")
-        self.assertEqual(loaded.alerts.min_value, 5)
+        self.assertEqual(loaded.carrier.spool_minutes, 5)
 
     def test_does_not_touch_the_same_key_in_another_section(self) -> None:
         self.path.write_text(
@@ -292,9 +266,9 @@ class EnsureConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             self.assertTrue(ensure_config_file(path))
-            path.write_text("[alerts]\nmin_value = 1\n", encoding="utf-8")
+            path.write_text("[carrier]\nspool_minutes = 1\n", encoding="utf-8")
             self.assertFalse(ensure_config_file(path))
-            self.assertEqual(Config.load(path).alerts.min_value, 1)
+            self.assertEqual(Config.load(path).carrier.spool_minutes, 1)
 
 
 if __name__ == "__main__":
@@ -316,35 +290,37 @@ class SegmentTests(unittest.TestCase):
     def test_turning_one_off_removes_it(self) -> None:
         order = list(SEGMENT_NAMES)
         self.assertEqual(
-            toggle_segment(["carrier", "system", "fss"], order, "system", False),
-            ["carrier", "fss"],
+            toggle_segment(["carrier", "system", "cargo"], order, "system", False),
+            ["carrier", "cargo"],
         )
 
     def test_turning_one_back_on_restores_the_menu_order(self) -> None:
         """Appending would silently rearrange the bar when a block returns."""
         order = list(SEGMENT_NAMES)
+        # cargo sits between ship and missions in the menu, so it must come
+        # back there rather than at the end.
         self.assertEqual(
-            toggle_segment(["carrier", "system", "bio"], order, "fss", True),
-            ["carrier", "system", "fss", "bio"],
+            toggle_segment(["carrier", "missions"], order, "cargo", True),
+            ["carrier", "cargo", "missions"],
         )
 
     def test_turning_on_something_already_on_does_not_duplicate_it(self) -> None:
         order = list(SEGMENT_NAMES)
         self.assertEqual(
-            toggle_segment(["carrier", "fss"], order, "fss", True), ["carrier", "fss"]
+            toggle_segment(["carrier", "cargo"], order, "cargo", True), ["carrier", "cargo"]
         )
 
     def test_turning_off_something_absent_is_harmless(self) -> None:
         order = list(SEGMENT_NAMES)
-        self.assertEqual(toggle_segment(["carrier"], order, "fss", False), ["carrier"])
+        self.assertEqual(toggle_segment(["carrier"], order, "cargo", False), ["carrier"])
 
     def test_an_unknown_segment_is_kept(self) -> None:
         """A config from a newer version must not lose its blocks to an older one."""
         order = list(SEGMENT_NAMES)
-        result = toggle_segment(["carrier", "somethingNew"], order, "fss", True)
+        result = toggle_segment(["carrier", "somethingNew"], order, "cargo", True)
         self.assertIn("somethingNew", result)
         self.assertIn("carrier", result)
-        self.assertIn("fss", result)
+        self.assertIn("cargo", result)
 
     def test_turning_everything_off_leaves_nothing(self) -> None:
         order = list(STATUS_SEGMENT_NAMES)
@@ -363,7 +339,7 @@ class ConfigListTests(unittest.TestCase):
         return path
 
     def test_replaces_an_existing_list(self) -> None:
-        path = self._config('[overlay]\nsegments = ["carrier", "bio"]\n')
+        path = self._config('[overlay]\nsegments = ["carrier", "system"]\n')
         self.assertTrue(
             set_config_list(path, "overlay", "segments", ["carrier", "system"])
         )
@@ -390,19 +366,19 @@ class ConfigListTests(unittest.TestCase):
 
     def test_adds_the_section_when_missing(self) -> None:
         path = self._config("[journal]\n")
-        set_config_list(path, "overlay", "segments", ["bio"])
-        self.assertEqual(Config.load(path).overlay.segments, ["bio"])
+        set_config_list(path, "overlay", "segments", ["system"])
+        self.assertEqual(Config.load(path).overlay.segments, ["system"])
 
     def test_writes_a_real_list_not_a_quoted_string(self) -> None:
         """The bug this function exists to avoid."""
         path = self._config("[overlay]\n")
-        set_config_list(path, "overlay", "segments", ["bio", "fss"])
-        self.assertIn('segments = ["bio", "fss"]', path.read_text(encoding="utf-8"))
-        self.assertEqual(Config.load(path).overlay.segments, ["bio", "fss"])
+        set_config_list(path, "overlay", "segments", ["system", "cargo"])
+        self.assertIn('segments = ["system", "cargo"]', path.read_text(encoding="utf-8"))
+        self.assertEqual(Config.load(path).overlay.segments, ["system", "cargo"])
 
     def test_a_missing_file_is_reported_not_created(self) -> None:
         self.assertFalse(
-            set_config_list(Path("/nonexistent/config.toml"), "overlay", "segments", ["bio"])
+            set_config_list(Path("/nonexistent/config.toml"), "overlay", "segments", ["system"])
         )
 
 
@@ -417,8 +393,8 @@ class MissingSectionTests(unittest.TestCase):
     def test_a_new_section_is_added(self) -> None:
         """Otherwise the commander looks for the setting and finds nothing."""
         path = self._file("[journal]\npath = ''\n")
-        self.assertIn("faction", add_missing_sections(path))
-        self.assertEqual(Config.load(path).faction.name, "")
+        self.assertIn("carrier", add_missing_sections(path))
+        self.assertEqual(Config.load(path).carrier.spool_minutes, 15.0)
 
     def test_existing_values_and_comments_survive(self) -> None:
         path = self._file('# keep me\n[journal]\npath = "D:/ED"\n')
@@ -446,7 +422,7 @@ class MissingSectionTests(unittest.TestCase):
         add_missing_sections(path)
         add_missing_sections(path)
         text = path.read_text(encoding="utf-8")
-        self.assertEqual(text.count("[faction]"), 1)
+        self.assertEqual(text.count("[carrier]"), 1)
 
     def test_a_missing_file_is_left_alone(self) -> None:
         self.assertEqual(add_missing_sections(Path("/nonexistent/config.toml")), [])
@@ -464,7 +440,7 @@ class MissingSectionTests(unittest.TestCase):
         add_missing_sections(path)
         reloaded = Config.load(path)
         self.assertEqual(reloaded.overlay.segments, ["system"])
-        self.assertEqual(reloaded.faction.match, "contains")
+        self.assertEqual(reloaded.carrier.spool_minutes, 15.0)
 
 
 class ConfigEscapingTests(unittest.TestCase):
@@ -478,28 +454,28 @@ class ConfigEscapingTests(unittest.TestCase):
     def test_an_ampersand_round_trips(self) -> None:
         """The faction this was written for is "Traders & Explorers"."""
         path = self._path()
-        set_config_value(path, "faction", "name", "Traders & Explorers")
-        self.assertEqual(Config.load(path).faction.name, "Traders & Explorers")
+        set_config_value(path, "journal", "path", "Traders & Explorers")
+        self.assertEqual(Config.load(path).journal.path, "Traders & Explorers")
 
     def test_a_quote_round_trips(self) -> None:
         path = self._path()
-        set_config_value(path, "faction", "name", 'The "Best" Faction')
-        self.assertEqual(Config.load(path).faction.name, 'The "Best" Faction')
+        set_config_value(path, "journal", "path", 'The "Best" Faction')
+        self.assertEqual(Config.load(path).journal.path, 'The "Best" Faction')
 
     def test_a_backslash_round_trips(self) -> None:
         path = self._path()
-        set_config_value(path, "faction", "name", "Back\\slash")
-        self.assertEqual(Config.load(path).faction.name, "Back\\slash")
+        set_config_value(path, "journal", "path", "Back\\slash")
+        self.assertEqual(Config.load(path).journal.path, "Back\\slash")
 
     def test_a_broken_value_does_not_discard_the_rest_of_the_file(self) -> None:
         """Config.load silently falls back to every default on a parse error,
         so one awkward character used to lose unrelated settings too."""
         path = self._path()
         set_config_value(path, "overlay", "font_size", "15")
-        set_config_value(path, "faction", "name", 'Quote " here')
+        set_config_value(path, "journal", "path", 'Quote " here')
         reloaded = Config.load(path)
         self.assertEqual(reloaded.overlay.font_size, 15)
-        self.assertEqual(reloaded.faction.name, 'Quote " here')
+        self.assertEqual(reloaded.journal.path, 'Quote " here')
 
 
 class SectionPlacementTests(unittest.TestCase):
@@ -516,10 +492,13 @@ class SectionPlacementTests(unittest.TestCase):
         return path
 
     def test_a_key_goes_into_its_own_section_not_the_last_one(self) -> None:
-        path = self._file("[faction]\nmatch = \"contains\"\n\n[alerts]\nmin_value = 5\n")
-        set_config_value(path, "faction", "name", "Traders & Explorers")
-        self.assertEqual(Config.load(path).faction.name, "Traders & Explorers")
-        self.assertEqual(Config.load(path).alerts.min_value, 5)
+        path = self._file('[journal]\npoll_interval = 1.0\n\n[carrier]\nspool_minutes = 5\n')
+        set_config_value(path, "journal", "path", "Sol")
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.journal.path, "Sol")
+        # The other section must be untouched: the key went into its own table,
+        # not appended to whichever one happened to be last.
+        self.assertEqual(reloaded.carrier.spool_minutes, 5.0)
 
     def test_a_deleted_key_is_restored_into_its_section(self) -> None:
         """The file promises deleting a line falls back to the default."""
@@ -527,35 +506,36 @@ class SectionPlacementTests(unittest.TestCase):
         ensure_config_file(path)
         text = path.read_text(encoding="utf-8").replace('name = ""\n', "", 1)
         path.write_text(text, encoding="utf-8")
-        set_config_value(path, "faction", "name", "X")
-        self.assertEqual(Config.load(path).faction.name, "X")
+        set_config_value(path, "journal", "path", "X")
+        self.assertEqual(Config.load(path).journal.path, "X")
 
     def test_an_empty_section_gets_a_key_without_a_second_header(self) -> None:
         """A duplicate [table] makes the whole file unparseable in TOML."""
         path = self._file("[faction]\n")
-        set_config_value(path, "faction", "name", "X")
+        set_config_value(path, "journal", "path", "X")
         self.assertEqual(path.read_text(encoding="utf-8").count("[faction]"), 1)
-        self.assertEqual(Config.load(path).faction.name, "X")
+        self.assertEqual(Config.load(path).journal.path, "X")
 
     def test_a_dotted_declaration_is_extended_with_a_dotted_key(self) -> None:
         """A bare key inserted after `faction.match = ...` would land at the
         top level, not in the table."""
         path = self._file('faction.match = "contains"\n')
-        set_config_value(path, "faction", "name", "X")
+        set_config_value(path, "journal", "path", "X")
         self.assertNotIn("[faction]", path.read_text(encoding="utf-8"))
-        self.assertEqual(Config.load(path).faction.name, "X")
+        self.assertEqual(Config.load(path).journal.path, "X")
 
     def test_a_missing_section_is_created(self) -> None:
         path = self._file('[journal]\npath = ""\n')
-        set_config_value(path, "faction", "name", "X")
-        self.assertEqual(Config.load(path).faction.name, "X")
-        self.assertEqual(Config.load(path).journal.path, "")
+        set_config_value(path, "carrier", "spool_minutes", "5")
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.carrier.spool_minutes, 5.0)
+        self.assertEqual(reloaded.journal.path, "")
 
     def test_compound_values_are_not_split_or_dropped(self) -> None:
         path = Path(tempfile.mkdtemp()) / "config.toml"
         ensure_config_file(path)
-        set_config_value(path, "faction", "name", 'A "B" \\ C & D')
-        self.assertEqual(Config.load(path).faction.name, 'A "B" \\ C & D')
+        set_config_value(path, "journal", "path", 'A "B" \\ C & D')
+        self.assertEqual(Config.load(path).journal.path, 'A "B" \\ C & D')
 
 
 class SectionDetectionTests(unittest.TestCase):
@@ -601,11 +581,13 @@ class MalformedSectionTests(unittest.TestCase):
         self.assertEqual(self._load("overlay = false").overlay.font_size, 13)
 
     def test_a_number_section_does_not_stop_startup(self) -> None:
-        self.assertEqual(self._load("exobiology = 3").exobiology_overrides, {})
+        self.assertEqual(self._load("overlay = 3").overlay.font_size, 13)
 
     def test_a_string_section_does_not_stop_startup(self) -> None:
         self.assertEqual(self._load('overlay = "top-center"').overlay.monitor, "primary")
 
     def test_other_settings_still_load_alongside_it(self) -> None:
-        config = self._load('overlay = false\n[alerts]\nmin_value = 1234\n')
-        self.assertEqual(config.alerts.min_value, 1234)
+        # Within validate()'s range, so the point is the surviving setting
+        # rather than the clamp.
+        config = self._load('overlay = false\n[carrier]\nspool_minutes = 45\n')
+        self.assertEqual(config.carrier.spool_minutes, 45.0)

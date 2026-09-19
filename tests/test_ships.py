@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 from elite_hud.config import Config
-from elite_hud.exobiology import ExobiologyTable
 from elite_hud.ships import ShipNames, prettify
 from elite_hud.state import GameState
 from elite_hud.status import parse_status
@@ -16,10 +15,7 @@ from elite_hud.status import parse_status
 
 def make_state() -> GameState:
     config = Config()
-    return GameState(
-        ExobiologyTable(),
-        value_threshold=config.alerts.min_value,
-        ship_names=ShipNames(Path(tempfile.mkdtemp()) / "ships.json"),
+    return GameState(ship_names=ShipNames(Path(tempfile.mkdtemp()) / "ships.json"),
     )
 
 

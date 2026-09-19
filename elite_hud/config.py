@@ -50,41 +50,28 @@ class LabelConfig:
     jump_max: str = "макс"
     jump_current: str = "тек"
     bodies: str = "тел"
-    fss: str = "FSS"
-    bio: str = "БИО"
-    bio_body: str = "тел"
     #: marks a value that is a lower bound for a whole genus, e.g. "≥19.0M"
-    at_least: str = "≥"
     waiting: str = "ожидание журнала"
     no_system: str = "нет данных"
     #: notification title when landing on a body would be a first footfall
-    footfall_first: str = "Первый след"
     #: unredeemed value: "К зачислению 343.3M"
-    unsold: str = "К зачислению"
     #: suffix naming how many samples back the figure: "5 проб"
-    unsold_samples: str = "проб"
     #: credit balance in the top row
     balance: str = "баланс"
     #: faction influence in the current system: "Traders & Explorers Inc. 30%"
-    influence: str = "влияние"
     #: notoriety level: "Плохая репутация 3"
     notoriety: str = "Плохая репутация"
     #: unpaid fines
     fines: str = "штраф"
     #: unsold exploration data, counted rather than valued
-    cartography: str = "картография"
     #: tonnes, for the cargo hold
     tonnes: str = "т"
     #: free hold space on a carrier: "KSS0 своб. 42951/60000 т"
     carrier_free: str = "своб."
     #: units for the cartography counts
-    systems_short: str = "сист."
-    bodies_short: str = "тел"
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
     #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
-    rarity: str = "Редкость"
-    total: str = "Всего"
     #: plural noun for remaining jumps
     jumps: str = "прыжка"
 
@@ -152,154 +139,6 @@ class OverlayConfig:
     show_glyphs: bool = True
     labels: LabelConfig = field(default_factory=LabelConfig)
 
-
-@dataclass
-class AlertConfig:
-    #: Payout that counts as "worth stopping for", in credits.
-    min_value: int = 7_000_000
-    sound_enabled: bool = True
-    #: Custom WAV/MP3 path; empty uses the bundled synthesised tone.
-    sound_file: str = ""
-    volume: float = 0.8
-    #: Lowest confidence that may play a sound: possible|guaranteed|confirmed.
-    sound_min_confidence: str = "guaranteed"
-    #: How long the HUD stays in the flashed alert state.
-    display_seconds: float = 8.0
-    #: Windows toast notification in addition to the HUD flash.
-    desktop_notification: bool = False
-
-
-@dataclass
-class MaterialsConfig:
-    """Material pickups and the rarity table.
-
-    Rarity is the only external data the project bundles; the source carries no
-    licence file, so it can be switched off and the notification will simply
-    name the material without a rarity. See tools/build_materials_data.py.
-    """
-
-    #: Track the hold and announce pickups at all.
-    enabled: bool = True
-    #: Announce each pickup. Off still tracks holdings for other uses.
-    notify_collected: bool = True
-    #: Mention rarity in the notification.
-    rarity: bool = True
-
-
-@dataclass
-class FactionConfig:
-    """A faction to watch from system to system.
-
-    The name is matched loosely by default, because the name a commander uses
-    for a faction is rarely the full one the game reports: asking to follow
-    "Traders & Explorers" has to find "Traders & Explorers Inc.", which is what
-    the journals actually contain.
-    """
-
-    #: Faction to follow. Empty means the segment is not shown at all.
-    name: str = ""
-    #: "contains" (default) or "exact", case-insensitive either way.
-    match: str = "contains"
-
-
-@dataclass
-class ShoppingConfig:
-    """The shopping popup, shown while the galaxy map is open.
-
-    It answers "where do I buy the twenty things my missions want", which needs a
-    market database rather than the journal. On by default, because it does
-    nothing until the galaxy map is opened *and* there is cargo to buy, so the
-    requests it makes are few and are entirely in service of what the commander
-    is looking at; ``enabled = false`` turns it off.
-    """
-
-    enabled: bool = True
-    #: Smallest landing pad the buying station must have: S, M or L.
-    min_pad: str = "L"
-    #: How many stations to offer per commodity.
-    systems_per_commodity: int = 3
-    #: Only used while the galaxy map is open; a state change re-reads it.
-    refresh_seconds: float = 300.0
-    #: Where to put the window, as an offset from the top of the screen.
-    offset_y: int = 60
-    #: Window size.
-    width: int = 580
-    height: int = 460
-
-
-@dataclass
-class AmbilightConfig:
-    """An ambient lamp driven by the game.
-
-    Off by default. It needs hardware on the local network and a third-party
-    library, so switching it on is a deliberate act rather than something a
-    fresh install does behind the commander's back.
-    """
-
-    enabled: bool = False
-    #: Lamp addresses on the LAN. Left empty, the library's discovery runs once
-    #: at start-up, but whether it also fills the address list is undocumented
-    #: (the source is obfuscated), so setting them is the reliable route.
-    ips: list[str] = field(default_factory=list)
-    #: Seconds to spend on discovery when no address is configured.
-    discover_seconds: float = 5.0
-    #: Frames per second sent to the lamp. Only changes are transmitted.
-    fps: float = 20.0
-    #: 0..1, applied to every colour.
-    brightness: float = 1.0
-    #: Blue breathing while the FSD charges.
-    charge_colour: list[int] = field(default_factory=lambda: [0, 0, 255])
-    charge_period: float = 1.4
-    #: Red strobe while being interdicted.
-    interdiction_colour: list[int] = field(default_factory=lambda: [255, 0, 0])
-    interdiction_period: float = 0.5
-    #: Steady red under attack.
-    danger_colour: list[int] = field(default_factory=lambda: [255, 0, 0])
-    danger_level: float = 0.55
-    #: Green flashes when the balance changes.
-    balance_colour: list[int] = field(default_factory=lambda: [0, 255, 0])
-    balance_flashes: int = 2
-    balance_on: float = 0.16
-    balance_off: float = 0.16
-
-
-@dataclass
-class FootfallConfig:
-    """When to announce that landing somewhere would be a first footfall.
-
-    The raw journal signal is far too common to announce: across the six
-    journals this project tests against, 347 of 987 scanned bodies are landable
-    and un-walked, but only 35 of those have biology at all. The defaults here
-    are what turn those 347 into 35.
-    """
-
-    enabled: bool = True
-    #: Only bodies that actually have biology, i.e. something to gain the x5 on.
-    require_biology: bool = True
-    #: Also require that nobody has scanned the body before.
-    require_undiscovered: bool = False
-    #: Minimum biological signal count; only used when require_biology is set.
-    min_bio_signals: int = 1
-
-
-@dataclass
-class NotificationConfig:
-    """Timed on-screen notifications, shared by every feature that raises one.
-
-    These live in config rather than in code because how long a line should
-    linger is a taste question, and the answer differs per commander and per
-    feature.
-    """
-
-    enabled: bool = True
-    #: How many may be on screen at once; the oldest gives way beyond this.
-    max_visible: int = 3
-    #: Seconds held at full opacity. Fades sit outside this.
-    hold_seconds: float = 6.0
-    fade_in_seconds: float = 0.18
-    fade_out_seconds: float = 0.45
-    #: Repaint rate while something is animating. Only runs while it matters.
-    animation_hz: float = 60.0
 
 
 @dataclass
@@ -371,19 +210,10 @@ class LoggingConfig:
 class Config:
     journal: JournalConfig = field(default_factory=JournalConfig)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
-    alerts: AlertConfig = field(default_factory=AlertConfig)
-    notifications: NotificationConfig = field(default_factory=NotificationConfig)
-    footfall: FootfallConfig = field(default_factory=FootfallConfig)
-    faction: FactionConfig = field(default_factory=FactionConfig)
-    ambilight: AmbilightConfig = field(default_factory=AmbilightConfig)
-    shopping: ShoppingConfig = field(default_factory=ShoppingConfig)
-    materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
-    #: species name -> credit value, overrides for the bundled table
-    exobiology_overrides: dict[str, int] = field(default_factory=dict)
 
     @staticmethod
     def _table(raw: dict, name: str) -> dict:
@@ -421,21 +251,12 @@ class Config:
         _merge(config.journal, cls._table(raw, "journal"))
         _merge(config.overlay, overlay)
         _merge(config.overlay.labels, cls._table(overlay, "labels"))
-        _merge(config.alerts, cls._table(raw, "alerts"))
-        _merge(config.notifications, cls._table(raw, "notifications"))
-        _merge(config.footfall, cls._table(raw, "footfall"))
-        _merge(config.faction, cls._table(raw, "faction"))
-        _merge(config.materials, cls._table(raw, "materials"))
         _merge(config.carrier, cls._table(raw, "carrier"))
         _merge(config.commander, cls._table(raw, "commander"))
         _merge(config.update, cls._table(raw, "update"))
         _merge(config.logging, cls._table(raw, "logging"))
 
-        overrides = cls._table(raw, "exobiology").get("values")
-        if isinstance(overrides, dict):
-            config.exobiology_overrides = {
-                str(k): int(v) for k, v in overrides.items() if isinstance(v, (int, float))
-            }
+
         config.validate()
         return config
 
@@ -462,51 +283,6 @@ class Config:
             log.warning("dropping unknown overlay.status_segments %s", unknown_status)
             overlay.status_segments = [s for s in overlay.status_segments if s in VALID_STATUS_SEGMENTS]
 
-        alerts = self.alerts
-        alerts.min_value = max(0, int(alerts.min_value))
-        alerts.volume = min(1.0, max(0.0, float(alerts.volume)))
-        alerts.display_seconds = max(0.0, float(alerts.display_seconds))
-        if alerts.sound_min_confidence not in VALID_CONFIDENCES:
-            log.warning(
-                "unknown alerts.sound_min_confidence %r, using 'guaranteed'",
-                alerts.sound_min_confidence,
-            )
-            alerts.sound_min_confidence = "guaranteed"
-
-        if self.faction.match not in ("contains", "exact"):
-            log.warning(
-                "unknown faction.match %r, using 'contains'", self.faction.match
-            )
-            self.faction.match = "contains"
-        self.faction.name = str(self.faction.name or "").strip()
-
-        shopping = self.shopping
-        shopping.min_pad = str(shopping.min_pad or "L").strip().upper()
-        if shopping.min_pad not in ("S", "M", "L"):
-            log.warning(
-                "unknown shopping.min_pad %r, using 'L'", shopping.min_pad
-            )
-            shopping.min_pad = "L"
-        shopping.systems_per_commodity = max(1, min(10, int(shopping.systems_per_commodity)))
-        shopping.refresh_seconds = max(30.0, float(shopping.refresh_seconds))
-        shopping.width = max(320, int(shopping.width))
-        shopping.height = max(240, int(shopping.height))
-
-        ambilight = self.ambilight
-        ambilight.fps = min(60.0, max(1.0, float(ambilight.fps)))
-        ambilight.brightness = min(1.0, max(0.0, float(ambilight.brightness)))
-        ambilight.danger_level = min(1.0, max(0.0, float(ambilight.danger_level)))
-        ambilight.charge_period = max(0.05, float(ambilight.charge_period))
-        ambilight.interdiction_period = max(0.05, float(ambilight.interdiction_period))
-        ambilight.balance_flashes = max(1, int(ambilight.balance_flashes))
-        ambilight.ips = [str(ip).strip() for ip in ambilight.ips if str(ip).strip()]
-
-        notifications = self.notifications
-        notifications.max_visible = max(1, int(notifications.max_visible))
-        notifications.hold_seconds = max(0.0, float(notifications.hold_seconds))
-        notifications.fade_in_seconds = max(0.0, float(notifications.fade_in_seconds))
-        notifications.fade_out_seconds = max(0.0, float(notifications.fade_out_seconds))
-        notifications.animation_hz = min(120.0, max(5.0, float(notifications.animation_hz)))
 
         self.journal.poll_interval = min(10.0, max(0.05, float(self.journal.poll_interval)))
         self.journal.history_days = max(0, int(self.journal.history_days))
@@ -541,13 +317,6 @@ class Config:
         for section_name, section in (
             ("journal", self.journal),
             ("overlay", self.overlay),
-            ("alerts", self.alerts),
-            ("notifications", self.notifications),
-            ("footfall", self.footfall),
-            ("faction", self.faction),
-            ("ambilight", self.ambilight),
-            ("shopping", self.shopping),
-            ("materials", self.materials),
             ("carrier", self.carrier),
             ("commander", self.commander),
             ("update", self.update),
@@ -567,7 +336,7 @@ class Config:
                 for sub_key, sub_value in value.items():
                     lines.append(f"{sub_key} = {_toml_value(sub_value)}")
             lines.append("")
-        lines.append("[exobiology.values]")
+
         lines.append("# Override individual species payouts when Frontier rebalances them.")
         lines.append('# "Stratum Tectonicas" = 19010800')
         lines.append("")
@@ -575,7 +344,7 @@ class Config:
 
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
-VALID_SEGMENTS = {"carrier", "system", "fss", "bio", "balance", "ship", "cargo", "missions"}
+VALID_SEGMENTS = {"carrier", "system", "balance", "cargo", "ship", "missions"}
 
 #: Human names for the segments, in the order they appear in a row. Used by the
 #: tray menu so blocks can be hidden without editing the config by hand.
@@ -586,40 +355,19 @@ SEGMENT_NAMES: dict[str, str] = {
     "ship": "Корабль",
     "cargo": "Трюм",
     "missions": "Миссии",
-    "fss": "FSS",
-    "bio": "Биология",
 }
 STATUS_SEGMENT_NAMES: dict[str, str] = {
     "next": "Цель прыжка",
-    "mode": "Режим игры",
-    "ship": "Корабль",
-    "missions": "Миссии",
-    "faction": "Фракция",
-    "empire": "Империя",
-    "federation": "Федерация",
-    "crime": "Розыск",
-    "cartography": "Картография",
-    "unsold": "К зачислению",
     "carriers": "Флотоносцы",
+    "mode": "Режим игры",
+    "crime": "Розыск",
 }
 
 #: Segments accepted in the bottom row. Ship and missions now default to the top
 #: row but are still accepted here: each builder works in either row, and
 #: refusing them would silently drop the segments of an existing config for no
 #: good reason.
-VALID_STATUS_SEGMENTS = {
-    "next",
-    "mode",
-    "faction",
-    "empire",
-    "federation",
-    "crime",
-    "cartography",
-    "unsold",
-    "ship",
-    "missions",
-    "carriers",
-}
+VALID_STATUS_SEGMENTS = {"next", "carriers", "mode", "crime"}
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
 VALID_UPDATE_ASSETS = {"any", "installer", "portable"}
@@ -870,27 +618,80 @@ def is_writable_dir(path: Path) -> bool:
     return True
 
 
-def resolve_config_path(explicit: "Path | None" = None) -> Path:
-    """Where the configuration lives.
+def looks_installed(directory: Path) -> bool:
+    """Whether ``directory`` is an installed copy rather than a portable one.
 
-    A portable copy keeps it next to the executable. An installed copy cannot:
-    the installer runs elevated and puts the program in ``Program Files``, while
-    the program itself deliberately runs as the ordinary user, so that directory
-    is read-only for it. In that case the config moves to the per-user location
-    rather than failing to start.
+    Inno Setup leaves its uninstaller beside the program, and it is the only
+    marker that distinguishes the two without asking whether this particular
+    process happens to be elevated -- which is exactly the question that must
+    not decide where the configuration lives.
+    """
+    for name in ("unins000.exe", "unins001.exe"):
+        if (directory / name).is_file():
+            return True
+    return False
+
+
+def resolve_config_path(explicit: "Path | None" = None) -> Path:
+    """Where the configuration lives. The same answer on every launch.
+
+    This used to be decided by whether the program's own directory was writable
+    *at that moment*, which is not a stable property: an installed copy normally
+    runs unelevated and cannot write to ``Program Files``, but when the
+    auto-updater's elevated installer relaunches it, it can. The two runs then
+    read and wrote two different files, so a panel switched on in one was gone
+    in the next -- the setting looked like it had never been saved.
+
+    Now the install shape decides, an existing file always wins over a
+    computed one, and nothing depends on privilege.
     """
     import sys  # noqa: PLC0415
 
     if explicit is not None:
         return explicit
-    if getattr(sys, "frozen", False):
-        executable_dir = Path(sys.executable).resolve().parent
-        if is_writable_dir(executable_dir):
-            return executable_dir / CONFIG_FILENAME
-        log.debug("%s is not writable; using the per-user config directory", executable_dir)
-        return user_config_dir() / CONFIG_FILENAME
-    # Running from a source checkout.
-    return Path(__file__).resolve().parent.parent / CONFIG_FILENAME
+    if not getattr(sys, "frozen", False):
+        # Running from a source checkout.
+        return Path(__file__).resolve().parent.parent / CONFIG_FILENAME
+
+    executable_dir = Path(sys.executable).resolve().parent
+    beside = executable_dir / CONFIG_FILENAME
+    per_user = user_config_dir() / CONFIG_FILENAME
+
+    if looks_installed(executable_dir):
+        # An installed copy belongs in the per-user directory; a file left
+        # beside the program by an elevated run is only used if nothing else
+        # exists, so that such a run stops hijacking the settings.
+        if per_user.is_file():
+            return per_user
+        if beside.is_file() and is_writable_dir(executable_dir):
+            return beside
+        return per_user
+
+    # A portable copy keeps its settings with it.
+    if beside.is_file():
+        return beside
+    if per_user.is_file():
+        return per_user
+    if is_writable_dir(executable_dir):
+        return beside
+    return per_user
+
+
+def config_is_writable(path: Path) -> bool:
+    """Whether settings can actually be saved to ``path``.
+
+    Checked before telling the commander a switch has been remembered: a
+    read-only file means the panel reverts on the next launch, and saying
+    nothing about that is how it goes unnoticed for days.
+    """
+    if not path.is_file():
+        return is_writable_dir(path.parent)
+    try:
+        with open(path, "a", encoding="utf-8"):
+            pass
+    except OSError:
+        return False
+    return True
 
 
 def _section_names(lines: list[str], text: str = "") -> set[str]:

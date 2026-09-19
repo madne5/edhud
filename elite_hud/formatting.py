@@ -5,8 +5,6 @@ Kept free of Qt imports so the HUD strings can be unit-tested headlessly.
 
 from __future__ import annotations
 
-from .exobiology import Confidence
-
 
 def format_credits(value: int) -> str:
     """Compact credit formatting: ``19_010_800`` -> ``'19.0M'``."""
@@ -32,16 +30,3 @@ def format_countdown(seconds: float) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
-
-
-CONFIDENCE_GLYPH = {
-    Confidence.CONFIRMED: "star",
-    Confidence.GUARANTEED: "gem",
-    Confidence.POSSIBLE: "warning",
-}
-
-CONFIDENCE_LABEL = {
-    Confidence.CONFIRMED: "точно",
-    Confidence.GUARANTEED: "гарантированно",
-    Confidence.POSSIBLE: "возможно",
-}
