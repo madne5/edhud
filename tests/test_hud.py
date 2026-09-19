@@ -71,6 +71,8 @@ def make_state(config: Config) -> GameState:
     state.apply({"event": "FSSDiscoveryScan", "SystemAddress": 1,
                  "SystemName": "Achenar", "Progress": 0.45,
                  "BodyCount": 15, "NonBodyCount": 2})
+    state.apply({"event": "ShipyardSwap", "ShipType": "panthermkii",
+                 "ShipType_Localised": "Panther Clipper Mk II"})
     state.apply({"event": "Loadout", "Ship": "panthermkii", "ShipIdent": "KSS-25",
                  "CargoCapacity": 1232, "MaxJumpRange": 40.5})
     state.apply({"event": "Cargo", "Vessel": "Ship", "Count": 199})
@@ -175,7 +177,9 @@ class HudRenderTests(unittest.TestCase):
         config.validate()
         self.assertEqual(config.overlay.segments, [])
         hud = self._hud(config, make_state(config))
-        self.assertEqual(hud.bar_text(), "")
+        # An emptied top row still shows the placeholder: it means "the journal
+        # has not said anything yet", and the row is not otherwise drawn.
+        self.assertEqual(hud.bar_text(), f"[radar]  {config.overlay.labels.waiting}")
         hud.close()
 
     def test_narrow_screens_show_less_than_wide_ones(self) -> None:
@@ -561,7 +565,7 @@ class JumpTargetTests(unittest.TestCase):
         hud = HudWindow(config, GameState())
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
-        self.assertEqual(hud.bar_text(), "")
+        self.assertNotIn("след.", hud.bar_text())
         hud.close()
 
 
