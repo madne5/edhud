@@ -82,6 +82,9 @@ class LabelConfig:
     material_encoded: str = "Данные"
     #: plural noun for remaining jumps
     jumps: str = "прыжка"
+    #: cargo missions: "взять 196 т · сдать 4320 т"
+    deliveries_collect: str = "взять"
+    deliveries_deliver: str = "сдать"
     #: EDSM line for the system being jumped to
     edsm_discovered: str = "открыта"
     edsm_fuel: str = "заправка"
@@ -141,6 +144,7 @@ class OverlayConfig:
             "ship",
             "cargo",
             "missions",
+            "deliveries",
         ]
     )
     #: Segments in the always-visible second row. Available: next, carriers,
@@ -430,7 +434,7 @@ class Config:
 
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
-VALID_SEGMENTS = {"carrier", "system", "balance", "cargo", "ship", "missions"}
+VALID_SEGMENTS = {"carrier", "system", "balance", "cargo", "ship", "missions", "deliveries"}
 
 #: Human names for the segments, in the order they appear in a row. Used by the
 #: tray menu so blocks can be hidden without editing the config by hand.
@@ -441,19 +445,21 @@ SEGMENT_NAMES: dict[str, str] = {
     "ship": "Корабль",
     "cargo": "Трюм",
     "missions": "Миссии",
+    "deliveries": "Груз по миссиям",
 }
 STATUS_SEGMENT_NAMES: dict[str, str] = {
     "next": "Цель прыжка",
     "carriers": "Флотоносцы",
     "mode": "Режим игры",
     "crime": "Розыск",
+    "deliveries": "Груз по миссиям",
 }
 
 #: Segments accepted in the bottom row. Ship and missions now default to the top
 #: row but are still accepted here: each builder works in either row, and
 #: refusing them would silently drop the segments of an existing config for no
 #: good reason.
-VALID_STATUS_SEGMENTS = {"next", "carriers", "mode", "crime"}
+VALID_STATUS_SEGMENTS = {"next", "carriers", "mode", "crime", "deliveries"}
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
 VALID_UPDATE_ASSETS = {"any", "installer", "portable"}

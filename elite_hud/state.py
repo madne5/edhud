@@ -15,6 +15,7 @@ from pathlib import Path
 from . import jump_range
 from .carriers import CarrierBook
 from .crime import CrimeRecord
+from .deliveries import DeliveryBook
 from .materials import MaterialNotice, MaterialTable
 from .notices import DockingNotice
 from .ships import ShipNames
@@ -303,6 +304,8 @@ class GameState:
         self.jump_plan = JumpPlan()
         #: Fines owed and notoriety.
         self.crime = CrimeRecord()
+        #: Open missions that involve carrying a commodity somewhere.
+        self.deliveries = DeliveryBook()
         #: Ship model names, learned from the journal (see elite_hud/ships.py).
         # `is not None`, not `or`: these objects define __len__, so an empty one
         # is falsy and would be silently replaced.
@@ -588,6 +591,10 @@ class GameState:
 
     # -- missions ----------------------------------------------------------
 
+    def _on_CargoDepot(self, event: dict) -> None:
+        """How much of a mission's commodity has moved, and how much is left."""
+        self.deliveries.observe(event)
+
     def _on_Missions(self, event: dict) -> None:
         """Written at startup with whatever missions are still open."""
         self.missions_known = True
@@ -603,12 +610,16 @@ class GameState:
         mission_id = event.get("MissionID")
         if isinstance(mission_id, int):
             self.active_missions.add(mission_id)
+        # A mission that names a commodity and an amount is one that involves
+        # moving cargo, so it joins the delivery book from the moment it is taken.
+        self.deliveries.observe(event)
 
     def _close_mission(self, event: dict) -> None:
         self.missions_known = True
         mission_id = event.get("MissionID")
         if isinstance(mission_id, int):
             self.active_missions.discard(mission_id)
+        self.deliveries.observe(event)
 
     _on_MissionCompleted = _close_mission
     _on_MissionAbandoned = _close_mission

@@ -683,6 +683,36 @@ class HudWindow(QWidget):
             lead=lead,
         )
 
+    def _deliveries_segment(self, lead: float) -> Segment | None:
+        """How much cargo the open missions still want, and where from.
+
+        Two numbers, because they answer different questions and the journal
+        states both: how much is still to be picked up, and how much is still
+        owed to a destination. A mission can be part-collected and part-delivered,
+        so neither is derived from the other. Hidden entirely when nothing is
+        outstanding, which is the common case.
+        """
+        to_collect, outstanding = self.state.deliveries.totals()
+        if not to_collect and not outstanding:
+            return None
+        cfg = self.config.overlay
+        labels = cfg.labels
+        spans: list[Span] = []
+        if to_collect:
+            spans.append(Span(f"{labels.deliveries_collect} ", color=cfg.foreground, dim=0.7))
+            spans.append(Span(f"{to_collect} {labels.tonnes}", color=cfg.accent, bold=True))
+        if outstanding:
+            if spans:
+                spans.append(Span("  ·  ", color=cfg.foreground, dim=0.5))
+            spans.append(Span(f"{labels.deliveries_deliver} ", color=cfg.foreground, dim=0.7))
+            spans.append(Span(f"{outstanding} {labels.tonnes}", color=cfg.accent, bold=True))
+        return Segment(
+            glyph="compass" if cfg.show_glyphs else None,
+            spans=spans,
+            glyph_color=cfg.accent,
+            lead=lead,
+        )
+
     def _balance_segment(self, lead: float) -> Segment | None:
         """The credit balance.
 
@@ -1144,6 +1174,7 @@ class HudWindow(QWidget):
         "cargo": _cargo_segment,
         "ship": _ship_segment,
         "missions": _missions_segment,
+        "deliveries": _deliveries_segment,
         "mode": _mode_segment,
         "next": _next_segment,
         "crime": _crime_segment,
