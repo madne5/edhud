@@ -117,6 +117,14 @@ class CarrierBook:
     cache_path: Path | None = None
     persist: bool = True
     carriers: dict[int, CarrierInfo] = field(default_factory=dict)
+    #: The carrier the commander is docked at, by CarrierID, or 0.
+    #:
+    #: Needed because ``CargoTransfer`` does not say what it moved cargo
+    #: between: the same event covers the SRV emptying into the ship after a
+    #: mining run, and in these journals six of the eight transfers were exactly
+    #: that. Docking is the only thing that tells them apart, because cargo can
+    #: only move to or from a carrier while docked at one.
+    docked_carrier_id: int = 0
 
     def __post_init__(self) -> None:
         self.persist = self.persist and self.cache_path is not None
@@ -200,6 +208,16 @@ class CarrierBook:
     def observe(self, event: dict) -> bool:
         """Fold in any carrier event. Returns True when something was learned."""
         name = str(event.get("event") or "")
+
+        # These carry no CarrierID, so they are handled before the check that
+        # every other carrier event has to pass.
+        if name in ("Docked", "Undocked") or name == "Location":
+            return self._observe_docking(event)
+        if name == "CargoTransfer":
+            return self._observe_transfer(event)
+        if name in ("MarketSell", "MarketBuy"):
+            return self._observe_market_trade(name, event)
+
         carrier_id = event.get("CarrierID")
         if not isinstance(carrier_id, int) or isinstance(carrier_id, bool):
             return False
@@ -255,6 +273,128 @@ class CarrierBook:
 
         if asdict(info) == before:
             return False
+        self._save()
+        return True
+
+    # -- cargo moving, between the reports ---------------------------------
+    #
+    # CarrierStats is the only event that states the hold, and it fires when the
+    # carrier's management is opened -- not when cargo moves. In the journals
+    # this project was built against, 1232 t of tritium left KSS0 at 08:43 and
+    # the new figure (5081, exactly 1232 less) did not arrive until 09:00, when
+    # the commander next opened that screen. Seventeen minutes of showing a
+    # number that was wrong, which is what "the hold does not update" was.
+    #
+    # So the events that move cargo adjust the figure in between. Both
+    # directions are confirmed against those journals: 6089 + 224 = 6313 after a
+    # 224 t transfer to KSS0, and 6313 - 1232 = 5081 after a 1232 t transfer
+    # from it. The next CarrierStats overwrites whatever this worked out, so a
+    # mistake here cannot survive long.
+
+    def _observe_docking(self, event: dict) -> bool:
+        """Remember which carrier the commander is docked at.
+
+        A ``CargoTransfer`` does not say what the cargo moved between, and the
+        same event covers the SRV emptying into the ship after a mining run:
+        six of the eight transfers in these journals were that, and none of them
+        touched a carrier's hold. Docking separates them exactly, because cargo
+        only reaches or leaves a carrier while docked at one.
+
+        Two events say where the commander is, and both are needed. ``Docked``
+        fires when they dock, but a transfer often happens in a *later* journal
+        file than the docking did -- on 2026-09-16 the docking was in the
+        previous file and the transfer that emptied 1232 t out of KSS0 was at
+        08:43:23 in the next one. ``Location`` is written at every login and
+        carries ``Docked: true`` with the station and its MarketID, which is what
+        closes that gap: relying on ``Docked`` alone silently dropped that
+        transfer, and the bar then showed a figure 1232 t too high until the
+        commander next opened the carrier screen.
+        """
+        name = event.get("event")
+        if name == "Undocked":
+            self.docked_carrier_id = 0
+            return False
+        if name == "Location" and not event.get("Docked"):
+            # In space, or docked nowhere: whatever we were at, we have left.
+            self.docked_carrier_id = 0
+            return False
+
+        # Docking anywhere that is not a carrier means any earlier carrier is
+        # behind us; a stale value here would attribute a later SRV transfer to
+        # it.
+        if str(event.get("StationType") or "") != "FleetCarrier":
+            self.docked_carrier_id = 0
+            return False
+
+        # A carrier's MarketID is its CarrierID. Verified on both carriers in
+        # the journals: Docked at "KSS0" reports 3713063168, which is KSS0's
+        # CarrierID, and "V3G-N1H" reports 3714982656, which is V3G-N1H's.
+        market = event.get("MarketID")
+        self.docked_carrier_id = (
+            market if isinstance(market, int) and not isinstance(market, bool) else 0
+        )
+        return False
+
+    def _observe_transfer(self, event: dict) -> bool:
+        """Apply a ship-to-carrier or carrier-to-ship cargo move."""
+        carrier_id = self.docked_carrier_id
+        if not carrier_id:
+            return False
+        transfers = event.get("Transfers")
+        if not isinstance(transfers, list):
+            return False
+
+        delta = 0
+        for item in transfers:
+            if not isinstance(item, dict):
+                continue
+            count = item.get("Count")
+            if not isinstance(count, int) or isinstance(count, bool):
+                continue
+            direction = str(item.get("Direction") or "").casefold()
+            if direction == "tocarrier":
+                delta += count
+            elif direction == "toship":
+                delta -= count
+        return self._apply_cargo_delta(carrier_id, delta, "CargoTransfer")
+
+    def _observe_market_trade(self, name: str, event: dict) -> bool:
+        """Apply a trade at a carrier's own market.
+
+        Selling to a carrier puts the goods in its hold; buying from it takes
+        them out. Every market trade in these journals happened at a station, so
+        this direction is read from what the events mean rather than measured --
+        the identity that makes it safe is not: MarketID matches a known
+        CarrierID, which no station can satisfy.
+        """
+        market = event.get("MarketID")
+        if not isinstance(market, int) or isinstance(market, bool):
+            return False
+        if market not in self.carriers:
+            return False
+        count = event.get("Count")
+        if not isinstance(count, int) or isinstance(count, bool):
+            return False
+        return self._apply_cargo_delta(
+            market, count if name == "MarketSell" else -count, name
+        )
+
+    def _apply_cargo_delta(self, carrier_id: int, delta: int, source: str) -> bool:
+        """Move the known hold, never below zero, and say so in the log."""
+        info = self.carriers.get(carrier_id)
+        if info is None or not delta:
+            return False
+        updated = max(0, info.cargo + delta)
+        if updated == info.cargo:
+            return False
+        log.info(
+            "carrier %s hold %d -> %d т (%s, awaiting the next CarrierStats)",
+            info.label,
+            info.cargo,
+            updated,
+            source,
+        )
+        info.cargo = updated
         self._save()
         return True
 

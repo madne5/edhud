@@ -653,6 +653,11 @@ class GameState:
             self._recompute_jump_range()
 
     def _on_Location(self, event: dict) -> None:
+        # Location is written at every login and says whether the commander is
+        # docked and where, including when they are standing on a carrier. The
+        # carrier book needs it: a cargo transfer often arrives in a later
+        # journal file than the Docked event that began the visit.
+        self.carriers.observe(event)
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
 
     def _on_CarrierJump(self, event: dict) -> None:
@@ -730,6 +735,27 @@ class GameState:
             return
         self.system.scanned_ids.add(body_id)
         self.system.scanned_bodies += 1
+
+    def _on_CargoTransfer(self, event: dict) -> None:
+        # Moving cargo to or from a carrier moves its hold, and no other event
+        # reports that until the management screen is opened.
+        self.carriers.observe(event)
+
+    def _on_MarketSell(self, event: dict) -> None:
+        self.carriers.observe(event)
+
+    def _on_MarketBuy(self, event: dict) -> None:
+        self.carriers.observe(event)
+
+    def _on_Docked(self, event: dict) -> None:
+        # Only the carrier bookkeeping: which station we are at decides whether a
+        # later CargoTransfer belongs to a carrier or to the SRV. The system is
+        # not taken from here -- Location and FSDJump set it, and entering a
+        # system consumes a leg of the jump plan.
+        self.carriers.observe(event)
+
+    def _on_Undocked(self, event: dict) -> None:
+        self.carriers.observe(event)
 
     def _on_CarrierStats(self, event: dict) -> None:
         self.carriers.observe(event)

@@ -211,6 +211,263 @@ class CarrierStateTests(unittest.TestCase):
         self.assertEqual(info.reserved_note(), "")
 
 
+class CarrierCargoTrackingTests(unittest.TestCase):
+    """The hold has to move when cargo moves, not only when the panel opens.
+
+    ``CarrierStats`` states the hold, but it fires when the carrier's management
+    screen is opened. On 2026-09-16 1232 t of tritium left KSS0 at 08:43:23 and
+    the new figure -- exactly 1232 less, 5081 -- did not arrive until 09:00:12.
+    Seventeen minutes of the bar showing a number that was wrong, which is the
+    reported symptom.
+
+    Every event below is copied from those journals, and both directions are
+    confirmed by the arithmetic: 6089 + 224 = 6313 after a transfer to KSS0, and
+    6313 - 1232 = 5081 after one from it. The next CarrierStats overwrites
+    whatever this works out, so a mistake cannot survive long.
+    """
+
+    KSS0 = 3713063168
+
+    #: Real CarrierStats for KSS0, in order: before, after +224, after -1232.
+    STATS_6089 = {
+        "event": "CarrierStats", "CarrierID": 3713063168,
+        "CarrierType": "SquadronCarrier", "Callsign": "KSS0",
+        "Name": "Sergey Korolev - mHQ", "FuelLevel": 686, "DockingAccess": "all",
+        "SpaceUsage": {"TotalCapacity": 60000, "Crew": 6270, "Cargo": 6089,
+                       "CargoSpaceReserved": 0, "ShipPacks": 0, "ModulePacks": 0,
+                       "FreeSpace": 42951},
+    }
+    STATS_6313 = dict(STATS_6089, SpaceUsage=dict(STATS_6089["SpaceUsage"], Cargo=6313,
+                                                  FreeSpace=42727))
+    STATS_5081 = dict(STATS_6089, SpaceUsage=dict(STATS_6089["SpaceUsage"], Cargo=5081,
+                                                  FreeSpace=43959))
+
+    DOCKED_AT_KSS0 = {
+        "event": "Docked", "StationName": "KSS0", "StationType": "FleetCarrier",
+        "MarketID": 3713063168, "StarSystem": "Blu Theia AV-F d11-1",
+        "SystemAddress": 940002216571,
+    }
+    #: Real: 224 t of sapphire moved from the ship into KSS0 at 21:57:07.
+    TRANSFER_IN = {
+        "event": "CargoTransfer",
+        "Transfers": [{"Type": "sapphire", "Type_Localised": "Сапфир",
+                       "Count": 224, "Direction": "tocarrier"}],
+    }
+    #: Real: 1232 t of tritium came off KSS0 into the ship at 08:43:23.
+    TRANSFER_OUT = {
+        "event": "CargoTransfer",
+        "Transfers": [{"Type": "tritium", "Type_Localised": "Тритий",
+                       "Count": 1232, "Direction": "toship"}],
+    }
+    #: Real: 34 t of sapphire moved from the SRV into the ship at 20:46:28,
+    #: while the commander was on a planet surface and not docked anywhere.
+    SRV_TRANSFER = {
+        "event": "CargoTransfer",
+        "Transfers": [{"Type": "sapphire", "Type_Localised": "Сапфир",
+                       "Count": 34, "Direction": "toship"}],
+    }
+
+    def _book(self) -> CarrierBook:
+        book = CarrierBook()
+        book.observe(self.STATS_6089)
+        return book
+
+    def test_a_login_docked_at_a_carrier_counts_as_docked(self) -> None:
+        """The docking is often in an earlier journal file than the transfer.
+
+        On 2026-09-16 the commander logged in already standing on KSS0: the
+        ``Docked`` event was in the previous file, and the transfer that emptied
+        1232 t out of the carrier was at 08:43:23 in the next one. ``Location``
+        is written at every login and carries ``Docked: true`` with the station
+        and its MarketID, so it is the event that closes this gap. Relying on
+        ``Docked`` alone dropped that transfer and left the bar 1232 t too high.
+        """
+        book = CarrierBook()
+        book.observe(self.STATS_6313)
+        book.observe(
+            {"event": "Location", "Docked": True, "StationName": "KSS0",
+             "StationType": "FleetCarrier", "MarketID": self.KSS0,
+             "StarSystem": "Blu Theia AV-F d11-1", "SystemAddress": 940002216571}
+        )
+        self.assertTrue(book.observe(self.TRANSFER_OUT))
+        self.assertEqual(book.info(self.KSS0).cargo, 5081)
+
+    def test_logging_in_in_space_is_not_docked_anywhere(self) -> None:
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        book.observe({"event": "Location", "Docked": False,
+                      "StarSystem": "Blu Theia AV-F d11-1"})
+        self.assertFalse(book.observe(self.SRV_TRANSFER))
+        self.assertEqual(book.info(self.KSS0).cargo, 6089)
+
+    def test_the_whole_real_sequence_matches_the_game(self) -> None:
+        """The 2026-09-16 session, event for event, as the journal recorded it.
+
+        Location at 08:40:34 says we are docked at KSS0; CarrierStats at
+        08:41:50 states 6313 t; CargoTransfer at 08:43:23 takes 1232 t off; and
+        the game's own next CarrierStats, at 09:00:12, says 5081. The point of
+        the rule is that the bar can show 5081 from 08:43:23 instead of waiting
+        seventeen minutes for the game to say so -- and that the figure it shows
+        in the meantime is the one the game will confirm.
+        """
+        state = GameState()
+        state.apply({"event": "LoadGame", "Commander": "Madne5",
+                     "Ship": "Explorer_NX", "Credits": 3_000_000_000})
+        state.apply({"event": "Location", "Docked": True, "StationName": "KSS0",
+                     "StationType": "FleetCarrier", "MarketID": self.KSS0})
+        state.apply(self.STATS_6313)
+        self.assertEqual(state.carriers.info(self.KSS0).cargo, 6313)
+
+        state.apply(self.TRANSFER_OUT)
+        derived = state.carriers.info(self.KSS0).cargo
+        self.assertEqual(derived, 5081)
+
+        # The game agrees, when it finally says so.
+        state.apply(self.STATS_5081)
+        self.assertEqual(state.carriers.info(self.KSS0).cargo, derived)
+
+    def test_a_transfer_to_the_carrier_adds_to_the_hold(self) -> None:
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        self.assertTrue(book.observe(self.TRANSFER_IN))
+        self.assertEqual(book.info(self.KSS0).cargo, 6313)
+        self.assertEqual(book.info(self.KSS0).cargo, self.STATS_6313["SpaceUsage"]["Cargo"])
+
+    def test_a_transfer_from_the_carrier_takes_from_the_hold(self) -> None:
+        book = self._book()
+        book.observe(self.STATS_6313)
+        book.observe(self.DOCKED_AT_KSS0)
+        self.assertTrue(book.observe(self.TRANSFER_OUT))
+        self.assertEqual(book.info(self.KSS0).cargo, 5081)
+        self.assertEqual(book.info(self.KSS0).cargo, self.STATS_5081["SpaceUsage"]["Cargo"])
+
+    def test_an_srv_transfer_is_not_the_carrier(self) -> None:
+        """Six of the eight transfers in these journals were the SRV, not cargo.
+
+        All six were ``toship`` and all six happened after a mining run with the
+        commander on a surface, so applying them to the carrier's hold would
+        have moved a number the game never moved. Docking is what tells them
+        apart.
+        """
+        book = self._book()
+        for _ in range(6):
+            self.assertFalse(book.observe(self.SRV_TRANSFER))
+        self.assertEqual(book.info(self.KSS0).cargo, 6089)
+
+    def test_docking_elsewhere_ends_the_attribution(self) -> None:
+        """A stale carrier would collect a later SRV transfer as its own."""
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        book.observe({"event": "Docked", "StationName": "Metz Enterprise",
+                      "StationType": "Coriolis", "MarketID": 3230679808})
+        self.assertFalse(book.observe(self.SRV_TRANSFER))
+        self.assertEqual(book.info(self.KSS0).cargo, 6089)
+
+    def test_undocking_ends_the_attribution(self) -> None:
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        book.observe({"event": "Undocked", "StationName": "KSS0",
+                      "StationType": "FleetCarrier", "MarketID": self.KSS0})
+        self.assertFalse(book.observe(self.TRANSFER_OUT))
+        self.assertEqual(book.info(self.KSS0).cargo, 6089)
+
+    def test_a_transfer_never_drives_the_hold_below_zero(self) -> None:
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        book.observe({"event": "CargoTransfer",
+                      "Transfers": [{"Type": "gold", "Count": 999999,
+                                     "Direction": "toship"}]})
+        self.assertEqual(book.info(self.KSS0).cargo, 0)
+
+    def test_an_unreadable_transfer_is_ignored(self) -> None:
+        """The journal is the game's file; a shape we do not know must be inert."""
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        for bad in (
+            {"event": "CargoTransfer"},
+            {"event": "CargoTransfer", "Transfers": "nonsense"},
+            {"event": "CargoTransfer", "Transfers": [None, 7]},
+            {"event": "CargoTransfer", "Transfers": [{"Count": "many",
+                                                     "Direction": "toship"}]},
+            {"event": "CargoTransfer", "Transfers": [{"Count": 5, "Direction": None}]},
+        ):
+            with self.subTest(event=bad):
+                self.assertFalse(book.observe(bad))
+        self.assertEqual(book.info(self.KSS0).cargo, 6089)
+
+    def test_the_next_carrier_stats_wins(self) -> None:
+        """Whatever the deltas worked out, the game's own figure replaces it."""
+        book = self._book()
+        book.observe(self.DOCKED_AT_KSS0)
+        book.observe(self.TRANSFER_IN)
+        self.assertEqual(book.info(self.KSS0).cargo, 6313)
+        # The journal's next real CarrierStats, two minutes later.
+        book.observe(self.STATS_6313)
+        self.assertEqual(book.info(self.KSS0).cargo, 6313)
+        # And a figure the deltas could not have known about.
+        book.observe(dict(self.STATS_6089, SpaceUsage=dict(
+            self.STATS_6089["SpaceUsage"], Cargo=12345)))
+        self.assertEqual(book.info(self.KSS0).cargo, 12345)
+
+    def test_a_trade_at_a_carrier_s_market_moves_its_hold(self) -> None:
+        """Selling to a carrier puts goods in it; buying takes them out.
+
+        No market trade in these journals happened at a carrier -- every one was
+        at a station -- so this direction follows what the events mean. The part
+        that is measured is the identity: a carrier's MarketID is its CarrierID,
+        which no station can satisfy.
+        """
+        book = self._book()
+        self.assertTrue(book.observe({"event": "MarketSell", "MarketID": self.KSS0,
+                                      "Type": "gold", "Count": 100}))
+        self.assertEqual(book.info(self.KSS0).cargo, 6189)
+        self.assertTrue(book.observe({"event": "MarketBuy", "MarketID": self.KSS0,
+                                      "Type": "gold", "Count": 40}))
+        self.assertEqual(book.info(self.KSS0).cargo, 6149)
+
+    def test_a_trade_at_a_station_is_ignored(self) -> None:
+        """All four market trades in the journals were at stations."""
+        book = self._book()
+        self.assertFalse(book.observe({"event": "MarketSell", "MarketID": 3230679808,
+                                       "Type": "gold", "Count": 1232}))
+        self.assertEqual(book.info(self.KSS0).cargo, 6089)
+
+    def test_an_unknown_carrier_is_not_invented(self) -> None:
+        """A carrier never seen in CarrierStats must not appear from a trade.
+
+        It would show up as a blank row that could not be named, and the cache
+        would keep it there.
+        """
+        book = CarrierBook()
+        self.assertFalse(book.observe({"event": "MarketSell", "MarketID": 999,
+                                       "Type": "gold", "Count": 10}))
+        book.observe({"event": "Docked", "StationName": "ZZZ-000",
+                      "StationType": "FleetCarrier", "MarketID": 999})
+        self.assertFalse(book.observe(self.TRANSFER_IN))
+        self.assertEqual(len(book), 0)
+
+    def test_the_move_survives_a_restart(self) -> None:
+        cache = Path(tempfile.mkdtemp()) / "carriers.json"
+        book = CarrierBook(cache_path=cache)
+        book.observe(self.STATS_6089)
+        book.observe(self.DOCKED_AT_KSS0)
+        book.observe(self.TRANSFER_IN)
+        reopened = CarrierBook(cache_path=cache)
+        self.assertEqual(reopened.info(self.KSS0).cargo, 6313)
+
+    def test_the_events_reach_the_carrier_through_apply(self) -> None:
+        """state must route them: the book is only reachable through apply()."""
+        state = GameState()
+        state.apply(self.STATS_6089)
+        state.apply(self.DOCKED_AT_KSS0)
+        state.apply(self.TRANSFER_IN)
+        self.assertEqual(state.carriers.info(self.KSS0).cargo, 6313)
+        state.apply({"event": "Undocked", "StationName": "KSS0",
+                     "StationType": "FleetCarrier", "MarketID": self.KSS0})
+        state.apply(self.SRV_TRANSFER)
+        self.assertEqual(state.carriers.info(self.KSS0).cargo, 6313)
+
+
 class DockingAccessTests(unittest.TestCase):
     """The icon colour encodes who may dock, so the mapping must be explicit.
 
