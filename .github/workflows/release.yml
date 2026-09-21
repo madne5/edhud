@@ -140,7 +140,11 @@ jobs:
 
           # Bounded: a windowed app that crashes shows an error dialog and never
           # exits, so -Wait would hang the runner until the job timeout.
-          foreach ($arg in @("--version", "--self-check", "--print-state")) {
+          #
+          # Every flag here must return on its own. --print-state and --headless
+          # do not: they start the overlay and keep running until the commander
+          # closes it, so listing them here reports a healthy build as hung.
+          foreach ($arg in @("--version", "--self-check", "--make-config")) {
             $proc = Start-Process -FilePath $exe -ArgumentList $arg -PassThru -WindowStyle Hidden
             if (-not $proc.WaitForExit(60000)) {
               $proc.Kill()

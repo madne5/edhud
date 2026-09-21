@@ -98,7 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--print-state",
         action="store_true",
-        help="with --headless, print the HUD line after every alert",
+        help=(
+            "print the HUD line after every journal event; runs alongside "
+            "the overlay, or with --headless instead of it"
+        ),
     )
     parser.add_argument(
         "--make-config",
