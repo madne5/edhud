@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import UpdateConfig
+from .i18n import Messages
 from .installation import InstallInfo, detect_install, needs_elevation
 from .updater import (
     CheckResult,
@@ -67,8 +68,11 @@ class UpdateService:
         client_factory=None,
         on_before_apply=None,
         on_apply_failed=None,
+        messages: Messages | None = None,
     ) -> None:
         self.config = config
+        #: Every line this service shows, in the chosen language.
+        self.messages = messages or Messages()
         self.current_version = current_version
         self.on_event = on_event
         self.install = install or detect_install()
@@ -107,6 +111,7 @@ class UpdateService:
             self.config.repo,
             token=self.config.token,
             timeout=self.config.timeout_seconds,
+            messages=self.messages,
         )
 
     def check_now(self) -> "CheckResult":
@@ -155,7 +160,7 @@ class UpdateService:
         if self._busy.locked():
             log.debug("update check already running")
             if interact:
-                self._emit(UpdateEvent("busy", "проверка обновлений уже идёт…"))
+                self._emit(UpdateEvent("busy", self.messages.update_already_checking))
             return
         self._thread = threading.Thread(
             target=self._check_worker,
@@ -172,13 +177,13 @@ class UpdateService:
         install_now = False
 
         with self._busy:
-            self._emit(UpdateEvent("checking", "проверка обновлений…"))
+            self._emit(UpdateEvent("checking", self.messages.update_checking))
             try:
                 result = self.check_now()
             except Exception as exc:  # pragma: no cover - defensive
                 log.exception("update check crashed")
                 self.last_error = str(exc)
-                self._emit(UpdateEvent("error", f"ошибка проверки обновлений: {exc}"))
+                self._emit(UpdateEvent("error", self.messages.update_check_failed.format(error=exc)))
                 return
 
             self.last_check = time.monotonic()
@@ -189,7 +194,12 @@ class UpdateService:
             if not result.has_update:
                 self.last_error = ""
                 if interact:
-                    self._emit(UpdateEvent("current", f"установлена последняя версия ({self.current_version})"))
+                    self._emit(
+                UpdateEvent(
+                    "current",
+                    self.messages.update_current.format(version=self.current_version),
+                )
+            )
                 return
 
             self.available = result.update
@@ -197,7 +207,7 @@ class UpdateService:
             self._emit(
                 UpdateEvent(
                     "available",
-                    f"доступна версия {self.available.version}",
+                    self.messages.update_available.format(version=self.available.version),
                     self.available,
                 )
             )
@@ -215,8 +225,9 @@ class UpdateService:
                     self._emit(
                         UpdateEvent(
                             "available",
-                            f"доступна версия {self.available.version}; "
-                            "запущено из исходников — обновление вручную",
+                            self.messages.update_available_source.format(
+                                version=self.available.version
+                            ),
                             self.available,
                         )
                     )
@@ -244,11 +255,11 @@ class UpdateService:
         """User-triggered download + apply, used by the tray menu."""
         target = update or self.available
         if target is None:
-            self._emit(UpdateEvent("error", "нет доступного обновления"))
+            self._emit(UpdateEvent("error", self.messages.update_nothing))
             return
         if self._busy.locked():
             log.info("install requested while update work is already running")
-            self._emit(UpdateEvent("busy", "обновление уже загружается, подождите…"))
+            self._emit(UpdateEvent("busy", self.messages.update_busy))
             return
         self._start_download(target, install_now=True)
 
@@ -259,7 +270,7 @@ class UpdateService:
         if not self._busy.acquire(timeout=BUSY_ACQUIRE_TIMEOUT):
             log.error("the update lock is still held after %.0fs", BUSY_ACQUIRE_TIMEOUT)
             self._emit(
-                UpdateEvent("error", "не удалось начать загрузку: другая задача не завершилась")
+                UpdateEvent("error", self.messages.update_busy_start)
             )
             return
         try:
@@ -278,7 +289,7 @@ class UpdateService:
                     self._emit(
                         UpdateEvent(
                             "downloading",
-                            f"загрузка обновления {update.version}…",
+                            self.messages.update_downloading.format(version=update.version),
                             update,
                             fraction,
                         )
@@ -293,7 +304,12 @@ class UpdateService:
             except Exception as exc:  # pragma: no cover - defensive
                 log.exception("update download crashed")
                 self.last_error = str(exc)
-                self._emit(UpdateEvent("error", f"не удалось скачать обновление: {exc}"))
+                self._emit(
+                    UpdateEvent(
+                        "error",
+                        self.messages.update_download_failed.format(error=exc),
+                    )
+                )
                 return
 
             if not install_now:
@@ -301,14 +317,20 @@ class UpdateService:
                 self._emit(
                     UpdateEvent(
                         "staged",
-                        f"обновление {update.version} загружено и будет установлено при следующем запуске",
+                        self.messages.update_staged.format(version=update.version),
                         update,
                     )
                 )
                 return
 
             self.clear_pending()
-            self._emit(UpdateEvent("applying", f"установка версии {update.version}…", update))
+            self._emit(
+                UpdateEvent(
+                    "applying",
+                    self.messages.update_installing.format(version=update.version),
+                    update,
+                )
+            )
             self._before_apply()
             try:
                 self.apply(update, path)
@@ -321,21 +343,29 @@ class UpdateService:
                 log.exception("applying the update crashed")
                 self.last_error = str(exc)
                 self._after_apply_failed()
-                self._emit(UpdateEvent("error", f"не удалось установить обновление: {exc}"))
+                self._emit(
+                UpdateEvent("error", self.messages.update_install_failed.format(error=exc))
+            )
                 return
-            self._emit(UpdateEvent("applied", "обновление установлено, перезапуск…", update))
+            self._emit(UpdateEvent("applied", self.messages.update_installed, update))
         finally:
             self._busy.release()
 
     def apply(self, update: UpdateInfo, path: Path) -> None:
         """Hand the downloaded package to the platform-specific installer."""
         if path.suffix.lower() == ".zip":
-            staging = stage_portable(path, self.download_dir / "staged")
-            apply_portable(staging)
+            staging = stage_portable(
+                path, self.download_dir / "staged", messages=self.messages
+            )
+            apply_portable(staging, messages=self.messages)
         else:
             # Only ask for administrator rights when the install directory
             # actually needs them; a per-user install updates silently.
-            apply_installer(path, elevate=needs_elevation(self.install.location))
+            apply_installer(
+                path,
+                elevate=needs_elevation(self.install.location),
+                messages=self.messages,
+            )
 
     # -- pending update (download mode) ------------------------------------
 
@@ -383,7 +413,9 @@ class UpdateService:
             return False
         version, path = staged
         log.info("applying the update staged earlier (%s)", version)
-        self._emit(UpdateEvent("applying", f"установка версии {version}…"))
+        self._emit(
+            UpdateEvent("applying", self.messages.update_installing.format(version=version))
+        )
         self._before_apply()
         try:
             install_update = UpdateInfo(
@@ -393,10 +425,12 @@ class UpdateService:
         except Exception as exc:
             log.exception("staged update failed")
             self._after_apply_failed()
-            self._emit(UpdateEvent("error", f"не удалось установить обновление: {exc}"))
+            self._emit(
+                UpdateEvent("error", self.messages.update_install_failed.format(error=exc))
+            )
             return False
         self.clear_pending()
-        self._emit(UpdateEvent("applied", "обновление установлено, перезапуск…"))
+        self._emit(UpdateEvent("applied", self.messages.update_installed))
         return True
 
     @staticmethod

@@ -166,6 +166,10 @@ class OverlayConfig:
     )
     #: Show the line that explains a refused docking request, with its reason.
     show_docking_denied: bool = True
+    #: Language of everything the program says: "ru" or "en". The label table
+    #: below is filled from it, and a label written by hand in the config file
+    #: still wins over it -- see elite_hud/i18n.py.
+    language: str = "ru"
     #: Draw a subtle rounded plate behind the text.
     show_background: bool = True
     #: Prefix each segment with a small glyph.
@@ -307,6 +311,11 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
+    #: Labels the config file set, kept apart from the resolved table so that a
+    #: language switch can tell a translation from a copy of our own default.
+    #: Not a setting: never written to the file, never read from it as one.
+    _file_labels: dict = field(default_factory=dict, repr=False, compare=False)
+
     @staticmethod
     def _table(raw: dict, name: str) -> dict:
         """A section, or an empty one when the file put something else there.
@@ -340,9 +349,12 @@ class Config:
             return config
 
         overlay = cls._table(raw, "overlay")
+        # The label table is captured rather than merged: which language is in
+        # force is decided afterwards, and a value that is merely a copy of one
+        # of our own defaults must not be mistaken for a translation.
+        config._file_labels = dict(cls._table(overlay, "labels"))
         _merge(config.journal, cls._table(raw, "journal"))
         _merge(config.overlay, overlay)
-        _merge(config.overlay.labels, cls._table(overlay, "labels"))
         _merge(config.carrier, cls._table(raw, "carrier"))
         _merge(config.commander, cls._table(raw, "commander"))
         _merge(config.materials, cls._table(raw, "materials"))
@@ -410,6 +422,23 @@ class Config:
         )
 
         self.overlay.monitor = str(self.overlay.monitor).strip()
+        self.apply_language()
+
+    def apply_language(self) -> None:
+        """Fill the label table from the chosen language and any real overrides."""
+        from . import i18n  # noqa: PLC0415 - i18n imports this module
+
+        self.overlay.language = i18n.normalise(self.overlay.language)
+        self.overlay.labels = i18n.resolve_labels(
+            self.overlay.language, getattr(self, "_file_labels", None)
+        )
+
+    @property
+    def messages(self):
+        """The window strings -- tray, balloons, notices -- for the language."""
+        from . import i18n  # noqa: PLC0415 - i18n imports this module
+
+        return i18n.messages(self.overlay.language)
 
     def to_toml(self) -> str:
         lines: list[str] = [

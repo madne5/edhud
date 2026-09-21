@@ -32,6 +32,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from .i18n import Messages
 
 log = logging.getLogger(__name__)
 
@@ -265,7 +266,11 @@ class GitHubClient:
         timeout: float = 15.0,
         api_base: str = GITHUB_API,
         user_agent: str = USER_AGENT,
+        messages: Messages | None = None,
     ) -> None:
+        #: Network failures are shown in a tray balloon, so they follow the
+        #: chosen language like everything else the program says out loud.
+        self.messages = messages or Messages()
         self.repo = repo.strip().strip("/")
         self.token = token.strip()
         self.timeout = timeout
@@ -293,26 +298,26 @@ class GitHubClient:
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise GitHubError(
-                    f"репозиторий {self.repo} не найден или релизов ещё нет"
+                    self.messages.net_repo_missing.format(repo=self.repo)
                 ) from exc
             if exc.code in (401, 403):
                 remaining = exc.headers.get("x-ratelimit-remaining") if exc.headers else None
                 if remaining == "0":
                     raise GitHubError(
-                        "исчерпан лимит запросов к GitHub API, попробуйте позже"
+                        self.messages.net_rate_limited
                     ) from exc
                 raise GitHubError(
-                    f"GitHub отклонил запрос ({exc.code}); проверьте токен доступа"
+                    self.messages.net_token_rejected.format(code=exc.code)
                 ) from exc
-            raise GitHubError(f"GitHub ответил ошибкой {exc.code}") from exc
+            raise GitHubError(self.messages.net_http_error.format(code=exc.code)) from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, ssl.SSLError):
                 raise GitHubError(
-                    "не удалось проверить сертификат GitHub (проверьте системное время и сертификаты)"
+                    self.messages.net_tls_failed
                 ) from exc
-            raise GitHubError(f"нет связи с GitHub: {exc.reason}") from exc
+            raise GitHubError(self.messages.net_no_connection.format(error=exc.reason)) from exc
         except TimeoutError as exc:
-            raise GitHubError("GitHub не ответил вовремя") from exc
+            raise GitHubError(self.messages.net_timeout) from exc
 
     def releases(self, *, per_page: int = 30) -> list[Release]:
         url = f"{self.api_base}/repos/{self.repo}/releases?per_page={int(per_page)}"
@@ -321,10 +326,10 @@ class GitHubClient:
             payload = json.loads(body)
         except json.JSONDecodeError as exc:
             raise GitHubError(
-                "GitHub вернул не JSON — возможно, запрос перехвачен прокси или сетью"
+                self.messages.net_not_json
             ) from exc
         if not isinstance(payload, list):
-            raise GitHubError("неожиданный ответ GitHub API")
+            raise GitHubError(self.messages.net_unexpected)
         return [release for release in (parse_release(item) for item in payload) if release]
 
     def asset_bytes(self, asset: Asset) -> bytes:
@@ -340,16 +345,16 @@ class GitHubClient:
             ) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
-            raise GitHubError(f"не удалось скачать {asset.name} (HTTP {exc.code})") from exc
+            raise GitHubError(self.messages.net_download_http.format(name=asset.name, code=exc.code)) from exc
         except urllib.error.URLError as exc:
-            raise GitHubError(f"нет связи с GitHub: {exc.reason}") from exc
+            raise GitHubError(self.messages.net_no_connection.format(error=exc.reason)) from exc
 
     @staticmethod
     def _check_scheme(url: str) -> None:
         # urllib raises a bare ValueError for a relative URL, which would
         # surface as an unexplained failure; say what is actually wrong.
         if not url.lower().startswith(("http://", "https://")):
-            raise GitHubError(f"GitHub вернул некорректный адрес файла: {url!r}")
+            raise GitHubError(self.messages.net_bad_url.format(url=url))
 
     def download(self, asset: Asset, destination: Path, *, progress=None) -> Path:
         """Stream a release asset to ``destination``, reporting progress."""
@@ -375,10 +380,10 @@ class GitHubClient:
                             progress(received, total)
         except urllib.error.HTTPError as exc:
             temporary.unlink(missing_ok=True)
-            raise GitHubError(f"не удалось скачать обновление (HTTP {exc.code})") from exc
+            raise GitHubError(self.messages.net_download_failed.format(code=exc.code)) from exc
         except urllib.error.URLError as exc:
             temporary.unlink(missing_ok=True)
-            raise GitHubError(f"нет связи с GitHub: {exc.reason}") from exc
+            raise GitHubError(self.messages.net_no_connection.format(error=exc.reason)) from exc
 
         temporary.replace(destination)
         return destination
@@ -494,7 +499,7 @@ class UpdateChecker:
     def check(self) -> CheckResult:
         if not self.client.repo or "/" not in self.client.repo:
             return CheckResult(
-                "disabled", "не задан репозиторий обновлений (update.repo)"
+                "disabled", self.client.messages.net_repo_unset
             )
         try:
             releases = self.client.releases()
@@ -504,17 +509,17 @@ class UpdateChecker:
 
         candidate = self.select_release(releases)
         if candidate is None:
-            return CheckResult("current", "обновлений нет")
+            return CheckResult("current", self.client.messages.net_no_releases)
 
         update = self.build_update(candidate)
         if update is None:
             return CheckResult(
                 "error",
-                f"в релизе {candidate.tag} нет подходящего файла для этого способа установки",
+                self.client.messages.net_no_asset.format(tag=candidate.tag),
             )
         return CheckResult(
             "update",
-            f"доступна версия {update.version}",
+            self.client.messages.update_available.format(version=update.version),
             update,
         )
 
@@ -573,9 +578,14 @@ class UpdateChecker:
 class UpdateDownloader:
     """Downloads an :class:`UpdateInfo` into a cache directory and verifies it."""
 
-    def __init__(self, client: GitHubClient, directory: Path) -> None:
+    def __init__(
+        self, client: GitHubClient, directory: Path, *, messages: Messages | None = None
+    ) -> None:
         self.client = client
         self.directory = directory
+        #: Falls back to the client's, which the update service already set to
+        #: the chosen language.
+        self.messages = messages or getattr(client, "messages", None) or Messages()
 
     def fetch(self, update: UpdateInfo, *, progress=None) -> Path:
         target = self.directory / update.asset.name
@@ -591,9 +601,7 @@ class UpdateDownloader:
             actual = sha256_file(target)
             if actual != expected:
                 target.unlink(missing_ok=True)
-                raise GitHubError(
-                    "контрольная сумма скачанного файла не совпала — загрузка отменена"
-                )
+                raise GitHubError(self.messages.net_checksum_mismatch)
             log.info("sha256 verified for %s", update.asset.name)
         else:
             log.warning(
@@ -641,10 +649,12 @@ SILENT_SETUP_FLAGS = [
 UPDATE_MARKER = ".update-in-progress"
 
 
-def apply_installer(path: Path, *, elevate: bool = True) -> None:
+def apply_installer(
+    path: Path, *, elevate: bool = True, messages: Messages | None = None
+) -> None:
     """Run a downloaded Inno Setup package, silently replacing this install."""
     if sys.platform != "win32":
-        raise GitHubError("установка обновления поддерживается только в Windows")
+        raise GitHubError((messages or Messages()).net_windows_only)
 
     arguments = " ".join(SILENT_SETUP_FLAGS)
     if elevate:
@@ -656,7 +666,7 @@ def apply_installer(path: Path, *, elevate: bool = True) -> None:
             None, "runas", str(path), arguments, None, 1
         )
         if result <= 32:
-            raise GitHubError("не удалось запустить установщик (отклонён запрос прав?)")
+            raise GitHubError((messages or Messages()).net_installer_failed)
         return
 
     subprocess.Popen([str(path), *SILENT_SETUP_FLAGS], close_fds=True)
@@ -691,7 +701,9 @@ del /F /Q "{marker}" >NUL 2>&1
 """
 
 
-def stage_portable(archive: Path, staging: Path) -> Path:
+def stage_portable(
+    archive: Path, staging: Path, *, messages: Messages | None = None
+) -> Path:
     """Extract a portable update zip into ``staging``."""
     if staging.exists():
         shutil.rmtree(staging, ignore_errors=True)
@@ -701,7 +713,7 @@ def stage_portable(archive: Path, staging: Path) -> Path:
             # Guard against zip-slip: refuse absolute or parent-relative paths.
             resolved = (staging / member).resolve()
             if not str(resolved).startswith(str(staging.resolve())):
-                raise GitHubError(f"архив содержит небезопасный путь: {member}")
+                raise GitHubError((messages or Messages()).net_unsafe_archive.format(name=member))
         bundle.extractall(staging)
 
     # Archives usually wrap everything in a single top-level folder.
@@ -711,24 +723,23 @@ def stage_portable(archive: Path, staging: Path) -> Path:
     return staging
 
 
-def apply_portable(root: Path, marker_name: str = UPDATE_MARKER) -> None:
+def apply_portable(
+    root: Path, marker_name: str = UPDATE_MARKER, *, messages: Messages | None = None
+) -> None:
     """Swap a portable install in place once this process exits."""
     if not getattr(sys, "frozen", False):
         # Nothing to swap: sys.executable is the interpreter this checkout runs
         # on, and replacing it would take the virtual environment with it. The
         # guard belongs here as well as in detect_install, because this function
         # is what does the damage.
-        raise GitHubError(
-            "обновление на месте недоступно при запуске из исходников: "
-            "sys.executable — это интерпретатор, а не HUD"
-        )
+        raise GitHubError((messages or Messages()).net_source_checkout)
     if sys.platform != "win32":
-        raise GitHubError("установка обновления поддерживается только в Windows")
+        raise GitHubError((messages or Messages()).net_windows_only)
 
     executable = Path(sys.executable).resolve()
     target = executable.parent
     if root.resolve() == target.resolve():
-        raise GitHubError("новая версия уже распакована в целевую папку")
+        raise GitHubError((messages or Messages()).net_already_staged)
 
     marker = target / marker_name
     try:

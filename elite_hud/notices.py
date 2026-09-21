@@ -16,17 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-#: The game's own reasons, as the journal spells them. Shown to a commander in
-#: Russian where the meaning is unambiguous, and left in the game's spelling
-#: where it is not -- guessing at a reason would be worse than quoting one.
-DOCKING_REASONS = {
-    "Distance": "слишком далеко от станции",
-    "NoSpace": "все площадки заняты",
-    "TooLarge": "корабль слишком большой для площадки",
-    "Hostile": "станция враждебна",
-    "Offline": "стыковка отключена",
-    "ActiveFighter": "сначала верните истребитель на борт",
-}
+from .i18n import Messages
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +40,10 @@ class NoticeStyle:
     total_label: str = "Всего"
     show_rarity: bool = True
     show_total: bool = True
+    #: The window strings, so a notice reads in the chosen language. The reasons
+    #: a docking request can be refused live here: the game's own wording where
+    #: the meaning is unambiguous, quoted as it stands where it is not.
+    messages: Messages = field(default_factory=Messages)
     #: Palette roles, for notices that are not about materials.
     foreground: str = ""
     accent: str = ""
@@ -66,10 +60,13 @@ class DockingNotice:
     reason: str = ""
 
     def render(self, style: NoticeStyle) -> Rendered:
-        where = self.station or "станция"
-        why = DOCKING_REASONS.get(self.reason, self.reason or "причина не указана")
+        text = style.messages
+        where = self.station or text.docking_nowhere
+        why = text.docking_reasons.get(
+            self.reason, self.reason or text.docking_reason_unknown
+        )
         return Rendered(
-            text=f"{where}: стыковка запрещена — {why}",
+            text=text.docking_denied.format(where=where, why=why),
             glyph="warning",
             colour=style.warning or style.danger,
         )

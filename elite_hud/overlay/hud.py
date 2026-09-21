@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QWidget
 from ..config import Config
 from ..formatting import format_countdown, format_credits
 from ..edsm import SystemFacts, describe
+from ..i18n import Messages
 from ..notices import DockingNotice, NoticeStyle, Rendered
 from ..materials import MaterialNotice
 from ..state import GameState
@@ -402,6 +403,7 @@ class HudWindow(QWidget):
             danger=overlay.danger,
             warning=overlay.warning,
             success=overlay.success,
+            messages=self.config.messages,
         )
 
     def render_notice(self) -> Rendered | None:
@@ -1103,23 +1105,24 @@ class HudWindow(QWidget):
         """A short description of where the bar currently is."""
         screen = self._target_screen()
         if screen is None:
-            return "нет данных"
+            return self.config.messages.screen_none
         geometry = screen.geometry()
         return f"{screen.name()} ({geometry.width()}x{geometry.height()})"
 
     @classmethod
-    def screen_choices(cls) -> list[tuple[str, str]]:
+    def screen_choices(cls, messages: Messages | None = None) -> list[tuple[str, str]]:
         """``(value, label)`` pairs for a display picker, primary first."""
-        choices: list[tuple[str, str]] = [("primary", "Основной")]
+        text = messages or Messages()
+        choices: list[tuple[str, str]] = [("primary", text.screen_primary)]
         screens = cls.screens()
         primary = cls.primary_screen() if screens else None
         for index, screen in enumerate(screens):
             geometry = screen.geometry()
-            suffix = " — основной" if screen is primary else ""
+            suffix = text.screen_primary_mark if screen is primary else ""
             choices.append(
                 (str(index), f"{index}: {screen.name()} {geometry.width()}x{geometry.height()}{suffix}")
             )
-        choices.append(("cursor", "Тот, где курсор мыши"))
+        choices.append(("cursor", text.screen_under_cursor))
         return choices
 
     def _reposition(self, *, force: bool = False) -> None:

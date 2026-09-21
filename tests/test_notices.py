@@ -12,7 +12,8 @@ import unittest
 
 from elite_hud.config import Config
 from elite_hud.materials import CATEGORY_GLYPHS, MaterialNotice
-from elite_hud.notices import DOCKING_REASONS, DockingNotice, NoticeStyle
+from elite_hud.i18n import ENGLISH_MESSAGES, Messages
+from elite_hud.notices import DockingNotice, NoticeStyle
 from elite_hud.state import GameState
 
 
@@ -38,7 +39,18 @@ def style_from(config: Config) -> NoticeStyle:
         show_total=materials.show_total,
         warning=overlay.warning,
         success=overlay.success,
+        messages=config.messages,
     )
+
+
+def style_from_en() -> NoticeStyle:
+    """The same style, in English."""
+    import elite_hud.i18n as i18n
+
+    config = Config()
+    config.overlay.language = "en"
+    config.apply_language()
+    return style_from(config)
 
 
 class DockingNoticeTests(unittest.TestCase):
@@ -56,10 +68,21 @@ class DockingNoticeTests(unittest.TestCase):
         self.assertEqual(rendered.colour, Config().overlay.warning)
 
     def test_every_documented_reason_is_translated(self) -> None:
-        for reason in DOCKING_REASONS:
+        reasons = Messages().docking_reasons
+        for reason in reasons:
             with self.subTest(reason=reason):
                 rendered = DockingNotice(station="X", reason=reason).render(self.style)
-                self.assertIn(DOCKING_REASONS[reason], rendered.text)
+                self.assertIn(reasons[reason], rendered.text)
+
+    def test_the_reasons_follow_the_language(self) -> None:
+        english = style_from_en()
+        rendered = DockingNotice(station="X", reason="Distance").render(english)
+        self.assertEqual(rendered.text, "X: docking refused — too far from the station")
+        # And the same table has an entry for every reason the game can send.
+        self.assertEqual(
+            set(Messages().docking_reasons),
+            set(Messages(**ENGLISH_MESSAGES).docking_reasons),
+        )
 
     def test_an_unknown_reason_is_quoted_rather_than_guessed(self) -> None:
         """A reason we do not know must not be turned into a plausible one."""

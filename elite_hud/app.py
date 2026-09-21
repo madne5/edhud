@@ -291,12 +291,14 @@ class HudApp:
         self.updates = UpdateService(
             config.update,
             current_version=__version__,
+            messages=config.messages,
             on_event=self.update_events.put,
             on_before_apply=self._release_instance_guard,
             on_apply_failed=self._reacquire_instance_guard,
         )
         self._update_actions: dict[str, object] = {}
         self._monitor_group = None
+        self._language_group = None
         self._update_mode_group = None
         self._quit_after_update = False
 
@@ -450,7 +452,9 @@ class HudApp:
 
         if event.kind == "available" and available_action is not None:
             available_action.setEnabled(True)
-            available_action.setText(f"Установить {event.update.version}")  # type: ignore[attr-defined]
+            available_action.setText(  # type: ignore[attr-defined]
+                self.config.messages.update_install_action.format(version=event.update.version)
+            )
         if status_action is not None and event.kind in {
             "checking",
             "current",
@@ -597,14 +601,16 @@ class HudApp:
         # is the only documented way to reach Quit.
         tray.activated.connect(self._on_tray_activated)
 
+        text = self.config.messages
         menu = QMenu()
-        menu.addAction("Показать / скрыть HUD", self._toggle_hud)
-        menu.addAction("Открыть config.toml", self._open_config)
+        menu.addAction(text.show_hide, self._toggle_hud)
+        menu.addAction(text.open_config, self._open_config)
         # Which file the settings go to, on screen. Two installs, or one config
         # that cannot be written, otherwise look identical from the outside.
         path = self._config_path()
         where = menu.addAction(
-            f"config: {path}" if config_is_writable(path) else f"config: НЕ ЗАПИСЫВАЕТСЯ — {path}"
+            (text.config_writable if config_is_writable(path) else text.config_read_only)
+            .format(path=path)
         )
         where.setEnabled(False)
         menu.addSeparator()
@@ -614,7 +620,9 @@ class HudApp:
         menu.addSeparator()
         self._build_update_menu(menu, app)
         menu.addSeparator()
-        menu.addAction("Выход", app.quit)
+        self._build_language_menu(menu)
+        menu.addSeparator()
+        menu.addAction(text.quit, app.quit)
 
         tray.setContextMenu(menu)
         tray.show()
@@ -640,7 +648,7 @@ class HudApp:
         if self.tray is not None:
             self.tray.showMessage(
                 "elite-hud",
-                f"{what}: не сохранилось в {path}; после перезапуска вернётся как было",
+                self.config.messages.not_saved.format(what=what, path=path),
             )
 
     def _build_segment_menus(self, menu) -> None:
@@ -650,10 +658,10 @@ class HudApp:
         commander who is not working on Empire or Federation standing wants to
         drop those two and keep the rest of the status row.
         """
-        top = menu.addMenu("Верхняя строка")
+        top = menu.addMenu(self.config.messages.top_row)
         self._add_segment_actions(top, "segments", SEGMENT_NAMES, self.config.overlay.segments)
 
-        status = menu.addMenu("Строка состояния")
+        status = menu.addMenu(self.config.messages.bottom_row)
         self._add_segment_actions(
             status, "status_segments", STATUS_SEGMENT_NAMES, self.config.overlay.status_segments
         )
@@ -704,11 +712,11 @@ class HudApp:
 
         from .overlay.hud import HudWindow
 
-        monitors = menu.addMenu("Монитор")
+        monitors = menu.addMenu(self.config.messages.monitor)
         group = QActionGroup(menu)
         group.setExclusive(True)
         current = self.config.overlay.monitor
-        for value, label in HudWindow.screen_choices():
+        for value, label in HudWindow.screen_choices(self.config.messages):
             action = monitors.addAction(qt_text(label))
             action.setCheckable(True)
             action.setChecked(value == current)
@@ -728,7 +736,9 @@ class HudApp:
         if not persisted:
             self._warn_not_saved("overlay.monitor", path)
         elif self.tray is not None:
-            self.tray.showMessage("elite-hud", f"HUD на мониторе: {where}")
+            self.tray.showMessage(
+                "elite-hud", self.config.messages.hud_on_monitor.format(where=where)
+            )
 
     def _build_update_menu(self, menu, app) -> None:
         from PySide6.QtGui import QActionGroup
@@ -739,10 +749,10 @@ class HudApp:
         status.setEnabled(False)
         self._update_actions["status"] = status
 
-        check = menu.addAction("Проверить обновления", self._check_updates_now)
+        check = menu.addAction(self.config.messages.update_check_now, self._check_updates_now)
         self._update_actions["check"] = check
 
-        install = menu.addAction("Обновление не найдено")
+        install = menu.addAction(self.config.messages.update_none_found)
         install.setEnabled(False)
         install.triggered.connect(lambda: self.updates.download_and_install())
         self._update_actions["install"] = install
@@ -750,14 +760,15 @@ class HudApp:
         if not self.updates.enabled:
             check.setEnabled(False)
 
-        modes = menu.addMenu("Режим обновлений")
+        text = self.config.messages
+        modes = menu.addMenu(text.update_mode)
         group = QActionGroup(menu)
         group.setExclusive(True)
         labels = {
-            "install": "Скачивать и устанавливать",
-            "download": "Ставить при следующем запуске",
-            "notify": "Только уведомлять",
-            "off": "Выключено",
+            "install": text.update_mode_install,
+            "download": text.update_mode_download,
+            "notify": text.update_mode_notify,
+            "off": text.update_mode_off,
         }
         for mode, label in labels.items():
             action = modes.addAction(label)
@@ -767,7 +778,58 @@ class HudApp:
             group.addAction(action)
         self._update_mode_group = group
 
-        menu.addAction("Заметки о выпуске", self._open_release_page)
+        menu.addAction(self.config.messages.release_notes, self._open_release_page)
+
+    def _build_language_menu(self, menu) -> None:
+        """Switch the wording without editing the config by hand."""
+        from PySide6.QtGui import QActionGroup
+
+        from .i18n import LANGUAGE_NAMES, LANGUAGES
+
+        text = self.config.messages
+        languages = menu.addMenu(text.language)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        for code in LANGUAGES:
+            action = languages.addAction(LANGUAGE_NAMES.get(code, code))
+            action.setCheckable(True)
+            action.setChecked(self.config.overlay.language == code)
+            action.triggered.connect(lambda _checked=False, c=code: self._set_language(c))
+            group.addAction(action)
+        self._language_group = group
+
+    def _set_language(self, language: str) -> None:
+        """Apply a language now and remember it.
+
+        The tray is rebuilt rather than patched: every entry in it is a string in
+        the old language, and rebuilding is the only way to be sure none of them
+        is left behind.
+        """
+        from .i18n import LANGUAGE_NAMES
+
+        self.config.overlay.language = language
+        self.config.apply_language()
+        path = self._config_path()
+        persisted = set_config_value(path, "overlay", "language", language)
+        if self.hud is not None:
+            self.hud.rebuild()
+        log.info("language set to %s", language)
+        if not persisted:
+            self._warn_not_saved("overlay.language", path)
+        self._rebuild_tray()
+        if self.tray is not None and persisted:
+            self.tray.showMessage(
+                "elite-hud", LANGUAGE_NAMES.get(language, language)
+            )
+
+    def _rebuild_tray(self) -> None:
+        if self._app is None:
+            return
+        if self.tray is not None:
+            self.tray.hide()
+            self.tray.setContextMenu(None)
+            self.tray = None
+        self._build_tray(self._app)
 
     def _release_instance_guard(self) -> None:
         """Drop the single-instance mutex before Setup replaces our files.
@@ -902,10 +964,7 @@ class HudApp:
             if not self.options.force and self.options.replay is None:
                 self.instance = SingleInstanceGuard()
                 if not self.instance.acquire():
-                    log.error(
-                        "elite-hud уже запущен (второй экземпляр не нужен); "
-                        "используйте --force, чтобы обойти проверку"
-                    )
+                    log.error("%s", self.config.messages.already_running)
                     return 3
 
             # May apply a staged update and ask us to exit without a UI.
