@@ -156,8 +156,9 @@ class HudWindow(QWidget):
         self._row_boxes: list[tuple[Row, float, float, float]] = []
         self._last_size: tuple[int, int] = (0, 0)
         self._last_position: tuple[int, int] | None = None
-        #: What EDSM said about the system we are jumping to.
+        #: What EDSM said about the system on screen, and when to stop showing it.
         self._edsm: SystemFacts | None = None
+        self._edsm_until: float = 0.0
         #: The notice being shown, and when it stops being shown.
         self._notice: MaterialNotice | DockingNotice | None = None
         self._notice_until: float = 0.0
@@ -297,13 +298,40 @@ class HudWindow(QWidget):
 
     # -- the system being jumped to ----------------------------------------
 
-    def set_edsm_facts(self, facts: SystemFacts | None) -> None:
-        """Attach what EDSM said about the current target, or clear it."""
+    def set_edsm_facts(self, facts: SystemFacts | None, *, seconds: float = 0.0) -> None:
+        """Attach what EDSM said about the current system, or clear it.
+
+        ``seconds`` bounds how long it stays: the line about the system being
+        jumped *to* is worth having for the whole flight, but the same line about
+        the system just arrived in is not -- it has said what it had to say by the
+        time the commander is sitting in the system, and leaving it up makes the
+        bar look stuck. Zero means no expiry.
+        """
         self._edsm = facts
+        self._edsm_until = _monotonic() + seconds if seconds > 0 else 0.0
         self.rebuild()
+
+    def expire_edsm(self, seconds: float) -> None:
+        """Let the line that is showing run out, without changing it."""
+        if self._edsm is None or seconds <= 0:
+            return
+        self._edsm_until = _monotonic() + seconds
+
+    def _edsm_active(self) -> bool:
+        if self._edsm is None:
+            return False
+        if self._edsm_until and _monotonic() >= self._edsm_until:
+            # Expired: forget it rather than leave a hidden value to be shown
+            # again by the next rebuild.
+            self._edsm = None
+            self._edsm_until = 0.0
+            return False
+        return True
 
     def edsm_text(self) -> str:
         """The EDSM line as plain text, or "" when there is nothing to say."""
+        if not self._edsm_active():
+            return ""
         return describe(self._edsm, self.config.overlay.labels, self.config.edsm)
 
     def _edsm_row(self) -> Row | None:

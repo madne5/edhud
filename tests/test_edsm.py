@@ -349,5 +349,196 @@ class FactsRenderingTests(unittest.TestCase):
         self.assertEqual(self._text(None), "")
 
 
+
+class FakeHud:
+    """Records what the app tells the bar, without a window."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def set_edsm_facts(self, facts, *, seconds: float = 0.0) -> None:
+        self.calls.append(("set", facts.name if facts is not None else None, seconds))
+
+    def expire_edsm(self, seconds: float) -> None:
+        self.calls.append(("expire", seconds))
+
+    def rebuild(self) -> None:  # pragma: no cover - the app never calls it here
+        pass
+
+
+class FakeEdsm:
+    """Stands in for the lookup service: no threads, no network."""
+
+    def __init__(self, cached: dict | None = None) -> None:
+        self._cached = dict(cached or {})
+        self.requested: list[tuple[str, bool]] = []
+
+    def cached(self, name: str):
+        return self._cached.get(name)
+
+    def request(self, name: str, *, force: bool = False) -> None:
+        self.requested.append((name, force))
+
+
+class ArrivalExpiryTests(unittest.TestCase):
+    """The line about the system just reached must not sit there for ever.
+
+    It stays accurate and stops being useful the moment the commander is sitting
+    in the system looking at it, and a bar that never changes reads as broken.
+    The line about the system being jumped *to* is a different thing: that one is
+    worth having for the whole flight, so it does not expire.
+    """
+
+    def _app(self, cached: dict | None = None):
+        from elite_hud.app import HudApp, build_parser
+        from elite_hud.config import Config
+
+        config = Config()
+        app = HudApp(config, build_parser().parse_args([]))
+        app.hud = FakeHud()
+        app.edsm = FakeEdsm(cached)
+        return app, config
+
+    def _facts(self, name: str):
+        from elite_hud.edsm import SystemFacts
+
+        return SystemFacts(name=name, known=True, discoverer="Someone",
+                           discovered_at="01.01.2020", scoopable=True)
+
+    def test_arriving_lets_the_line_run_out(self) -> None:
+        app, config = self._app({"Sol": self._facts("Sol")})
+        app._edsm_subject = "Sol"
+        app.state.apply({"event": "FSDJump", "StarSystem": "Sol", "SystemAddress": 1})
+        app._follow_edsm("Sol")
+        self.assertEqual(app.hud.calls, [("expire", config.edsm.arrival_display_seconds)])
+
+    def test_a_new_target_replaces_the_line_without_a_deadline(self) -> None:
+        app, _ = self._app({"Achenar": self._facts("Achenar")})
+        app.state.apply({"event": "FSDTarget", "Name": "Achenar", "StarClass": "K",
+                         "RemainingJumpsInRoute": 3})
+        app._follow_edsm("")
+        self.assertEqual(app.hud.calls, [("set", "Achenar", 0.0)])
+        self.assertEqual(app.edsm.requested, [("Achenar", False)])
+
+    def test_arriving_somewhere_unknown_asks_again_and_shows_nothing_yet(self) -> None:
+        app, _ = self._app()
+        app.state.apply({"event": "FSDJump", "StarSystem": "Nowhere", "SystemAddress": 2})
+        app._follow_edsm("Nowhere")
+        self.assertEqual(app.hud.calls, [("set", None, 0.0)])
+        self.assertEqual(app.edsm.requested, [("Nowhere", True)])
+
+    def test_the_answer_to_an_arrival_lookup_carries_the_deadline(self) -> None:
+        """A system EDSM has never heard of is still shown, then retired."""
+        app, config = self._app()
+        app._edsm_subject = "Nowhere"
+        app._show_edsm(self._facts("Nowhere"),
+                       seconds=config.edsm.arrival_display_seconds)
+        self.assertEqual(
+            app.hud.calls, [("set", "Nowhere", config.edsm.arrival_display_seconds)]
+        )
+
+    def test_the_deadline_can_be_switched_off(self) -> None:
+        """0 means "keep it until the next jump", which is what it used to do."""
+        app, config = self._app({"Sol": self._facts("Sol")})
+        config.edsm.arrival_display_seconds = 0.0
+        app._edsm_subject = "Sol"
+        app._follow_edsm("Sol")
+        self.assertEqual(
+            app.hud.calls,
+            [("expire", 0.0)],
+            "the bar is told zero, which it treats as no deadline",
+        )
+
+
+class HudExpiryTests(unittest.TestCase):
+    """The same behaviour, seen through the bar and a clock that can be moved."""
+
+    def setUp(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from tests.test_hud import QT_SKIP_REASON
+
+        if QT_SKIP_REASON:
+            self.skipTest(QT_SKIP_REASON)
+        QApplication.instance() or QApplication([])
+        import elite_hud.overlay.hud as hud_module
+
+        self.module = hud_module
+        self.clock = [1000.0]
+        self._real = hud_module._monotonic
+        hud_module._monotonic = lambda: self.clock[0]
+        self.addCleanup(self._restore)
+
+    def _restore(self) -> None:
+        self.module._monotonic = self._real
+
+    def _hud(self):
+        from elite_hud.config import Config
+        from elite_hud.overlay.hud import HudWindow
+        from elite_hud.state import GameState
+
+        hud = HudWindow(Config(), GameState())
+        hud._available_width = lambda: 2560.0
+        hud.rebuild()
+        self.addCleanup(hud.close)
+        return hud
+
+    def _facts(self):
+        from elite_hud.edsm import SystemFacts
+
+        return SystemFacts(name="Sol", known=True, discoverer="Corbin Moran",
+                           discovered_at="22.11.2014", scoopable=True, traffic_total=1)
+
+    def test_a_target_line_has_no_deadline(self) -> None:
+        hud = self._hud()
+        hud.set_edsm_facts(self._facts())
+        self.clock[0] += 3600
+        hud.rebuild()
+        self.assertIn("Sol", hud.edsm_text())
+        self.assertTrue(any(row.kind == "edsm" for row in hud._rows))
+
+    def test_an_arrival_line_goes_away(self) -> None:
+        hud = self._hud()
+        hud.set_edsm_facts(self._facts(), seconds=15.0)
+        self.clock[0] += 14
+        hud.rebuild()
+        self.assertIn("Sol", hud.edsm_text())
+        self.clock[0] += 2
+        hud.rebuild()
+        self.assertEqual(hud.edsm_text(), "")
+        self.assertFalse(any(row.kind == "edsm" for row in hud._rows))
+
+    def test_an_expired_line_cannot_come_back(self) -> None:
+        """It is forgotten, not merely hidden, so a later rebuild cannot revive it."""
+        hud = self._hud()
+        hud.set_edsm_facts(self._facts(), seconds=15.0)
+        self.clock[0] += 16
+        hud.rebuild()
+        hud.rebuild()
+        self.assertEqual(hud.edsm_text(), "")
+        self.assertIsNone(hud._edsm)
+
+    def test_expire_marks_whatever_is_showing(self) -> None:
+        hud = self._hud()
+        hud.set_edsm_facts(self._facts())
+        hud.expire_edsm(15.0)
+        self.clock[0] += 16
+        hud.rebuild()
+        self.assertEqual(hud.edsm_text(), "")
+
+    def test_expiring_nothing_does_nothing(self) -> None:
+        hud = self._hud()
+        hud.expire_edsm(15.0)
+        self.assertEqual(hud.edsm_text(), "")
+
+    def test_zero_seconds_means_no_deadline(self) -> None:
+        hud = self._hud()
+        hud.set_edsm_facts(self._facts(), seconds=0.0)
+        hud.expire_edsm(0.0)
+        self.clock[0] += 3600
+        hud.rebuild()
+        self.assertIn("Sol", hud.edsm_text())
+
+
 if __name__ == "__main__":
     unittest.main()

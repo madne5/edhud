@@ -324,6 +324,7 @@ class HudApp:
     def _drain(self) -> bool:
         """Apply queued events. Returns True when something changed."""
         changed = False
+        arrived_in = ""
         for _ in range(MAX_EVENTS_PER_TICK):
             try:
                 event = self.events.get_nowait()
@@ -331,24 +332,31 @@ class HudApp:
                 break
             changed = True
             self.state.apply(event)
+            if event.get("event") == "FSDJump":
+                arrived_in = str(event.get("StarSystem") or "")
 
         # --print-state is a debugging aid, so it follows every change rather
         # than only the alerts it used to wait for.
         if changed:
-            self._follow_edsm()
+            self._follow_edsm(arrived_in)
             self._publish_notices()
             if self.options.print_state:
                 print(self.render_text_line())
         return changed
 
-    def _follow_edsm(self) -> None:
-        """Ask EDSM about the system being jumped to, and re-check on arrival.
+    def _follow_edsm(self, arrived_in: str = "") -> None:
+        """Ask EDSM about the system being jumped to, and retire the last answer.
 
         The target is known before the jump -- that is what FSDTarget is for --
         so this is the one system the journal has not described yet. Arriving
         re-asks about the system we are now in: the whole point of an answer of
         "no data in EDSM" is that it can be confirmed or corrected, and only
         arriving can do that.
+
+        Arriving also ends the life of the line that is up. It was about the
+        system just reached, and it stays accurate but stops being useful: the
+        commander is there, looking at it. Preparing the next jump replaces it
+        outright, which is the other half of the same idea.
         """
         if not self.config.edsm.enabled:
             return
@@ -356,28 +364,34 @@ class HudApp:
         if target and target != self._edsm_subject:
             self._request_edsm(target)
             return
+        if not arrived_in:
+            return
 
-        arrived = self.state.system.name
-        if arrived and self.config.edsm.verify_on_arrival and arrived != self._edsm_subject:
-            known = self.edsm.cached(arrived)
-            if known is None or not known.known:
-                self._request_edsm(arrived, force=True)
+        unknown = self.edsm.cached(arrived_in)
+        if self.config.edsm.verify_on_arrival and (
+            unknown is None or not unknown.known
+        ) and arrived_in != self._edsm_subject:
+            self._request_edsm(arrived_in, force=True, arrived=True)
+            return
+        if self.hud is not None:
+            self.hud.expire_edsm(self.config.edsm.arrival_display_seconds)
 
-    def _request_edsm(self, name: str, *, force: bool = False) -> None:
+    def _request_edsm(self, name: str, *, force: bool = False, arrived: bool = False) -> None:
         """Look a system up, showing anything already known about it at once."""
         if not self.config.edsm.enabled or not name:
             return
         self._edsm_subject = name
+        seconds = self.config.edsm.arrival_display_seconds if arrived else 0.0
         cached = self.edsm.cached(name)
         if cached is not None:
-            self._show_edsm(cached)
+            self._show_edsm(cached, seconds=seconds)
         elif self.hud is not None:
             # Nothing yet for this system: an empty row beats the previous
             # system's answer wearing the new name.
             self.hud.set_edsm_facts(None)
         self.edsm.request(name, force=force)
 
-    def _show_edsm(self, facts: SystemFacts) -> None:
+    def _show_edsm(self, facts: SystemFacts, *, seconds: float = 0.0) -> None:
         log.info(
             "target %s: %s",
             facts.name,
@@ -388,7 +402,7 @@ class HudApp:
             ),
         )
         if self.hud is not None:
-            self.hud.set_edsm_facts(facts)
+            self.hud.set_edsm_facts(facts, seconds=seconds)
 
     def _drain_edsm(self) -> None:
         while True:

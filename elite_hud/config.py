@@ -230,6 +230,12 @@ class EdsmConfig:
     #: Re-check an unknown system after arriving in it, so "no data" is
     #: confirmed or corrected rather than left standing.
     verify_on_arrival: bool = True
+    #: How long the line stays after arriving in the system it describes. The
+    #: line about the system being jumped *to* is useful for the whole flight;
+    #: the same line about the system just arrived in has said everything it has
+    #: to say, and leaving it up makes the bar look stuck. 0 keeps it until the
+    #: next jump, which is what it did before.
+    arrival_display_seconds: float = 15.0
 
 
 @dataclass
@@ -399,6 +405,9 @@ class Config:
         )
 
         self.edsm.timeout_seconds = min(60.0, max(3.0, float(self.edsm.timeout_seconds)))
+        self.edsm.arrival_display_seconds = min(
+            600.0, max(0.0, float(self.edsm.arrival_display_seconds))
+        )
 
         self.overlay.monitor = str(self.overlay.monitor).strip()
 
