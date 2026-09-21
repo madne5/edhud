@@ -140,7 +140,7 @@ jobs:
 
           # Bounded: a windowed app that crashes shows an error dialog and never
           # exits, so -Wait would hang the runner until the job timeout.
-          foreach ($arg in @("--version", "--self-check", "--list-genera")) {
+          foreach ($arg in @("--version", "--self-check", "--print-state")) {
             $proc = Start-Process -FilePath $exe -ArgumentList $arg -PassThru -WindowStyle Hidden
             if (-not $proc.WaitForExit(60000)) {
               $proc.Kill()

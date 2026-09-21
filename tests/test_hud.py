@@ -125,11 +125,17 @@ class HudRenderTests(unittest.TestCase):
         config = Config()
         hud = self._hud(config, make_state(config))
         text = hud.bar_text()
-        self.assertIn("Achenar", text)
-        self.assertIn("баланс", text)
-        self.assertIn("Panther Clipper Mk II", text)
-        self.assertIn("199/1232", text)
-        self.assertIn("миссии", text)
+        # Checked one at a time so a failure names the segment that went
+        # missing instead of just quoting the whole bar.
+        for expected in (
+            "Achenar",
+            config.overlay.labels.balance,
+            "Panther Clipper Mk II",
+            "199/1232",
+            config.overlay.labels.missions,
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, text)
         hud.close()
 
     def test_nothing_is_drawn_before_the_journal_says_anything(self) -> None:
@@ -178,8 +184,11 @@ class HudRenderTests(unittest.TestCase):
         self.assertEqual(config.overlay.segments, [])
         hud = self._hud(config, make_state(config))
         # An emptied top row still shows the placeholder: it means "the journal
-        # has not said anything yet", and the row is not otherwise drawn.
-        self.assertEqual(hud.bar_text(), f"[radar]  {config.overlay.labels.waiting}")
+        # has not said anything yet", and the row is not otherwise drawn. Only
+        # the top row is asserted on -- the bottom row is a separate setting
+        # and keeps whatever it was told to show.
+        self.assertEqual(hud.primary_text(), f"[radar]  {config.overlay.labels.waiting}")
+        self.assertIn(config.overlay.labels.waiting, hud.bar_text())
         hud.close()
 
     def test_narrow_screens_show_less_than_wide_ones(self) -> None:
@@ -206,6 +215,43 @@ class HudRenderTests(unittest.TestCase):
         hud = self._hud(config, make_state(config))
         self.assertNotIn("[", hud.bar_text())
         hud.close()
+
+
+class SegmentCoverageTests(unittest.TestCase):
+    """Every segment name the config accepts must reach a builder.
+
+    The main row used to dispatch through an if/elif chain of its own that
+    stopped at carrier, system, balance and cargo. "ship" and "missions" were in
+    the shipped top row, were accepted by validate(), and were drawn by nothing
+    at all -- the config said one thing and the bar did another, with no warning
+    anywhere. Comparing the two sets is what catches that; it needs no
+    QApplication, because it only reads the class, so it also runs where Qt
+    cannot start.
+    """
+
+    def test_the_builder_table_covers_every_accepted_name(self) -> None:
+        from elite_hud.config import VALID_SEGMENTS, VALID_STATUS_SEGMENTS
+        from elite_hud.overlay.hud import HudWindow
+
+        # "carriers" expands to one segment per carrier, so it has no single
+        # builder to point at.
+        expected = (VALID_SEGMENTS | VALID_STATUS_SEGMENTS) - {"carriers"}
+        self.assertEqual(set(HudWindow.SEGMENT_BUILDERS), expected)
+
+    def test_every_builder_is_a_real_method(self) -> None:
+        from elite_hud.overlay.hud import HudWindow
+
+        for name, builder in HudWindow.SEGMENT_BUILDERS.items():
+            with self.subTest(name=name):
+                self.assertTrue(callable(builder))
+                self.assertIs(getattr(HudWindow, builder.__name__, None), builder)
+
+    def test_the_shipped_rows_only_name_segments_that_exist(self) -> None:
+        from elite_hud.overlay.hud import HudWindow
+
+        config = Config()
+        shipped = set(config.overlay.segments) | set(config.overlay.status_segments)
+        self.assertLessEqual(shipped - {"carriers"}, set(HudWindow.SEGMENT_BUILDERS))
 
 
 @unittest.skipIf(QT_SKIP_REASON is not None, QT_SKIP_REASON or "")

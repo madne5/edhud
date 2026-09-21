@@ -681,35 +681,29 @@ class GameState:
         if isinstance(event.get("Count"), int) and not self.system.body_count:
             self.system.body_count = int(event["Count"])
 
-    # -- body signals ------------------------------------------------------
+    # -- body scanning -----------------------------------------------------
 
-    @staticmethod
     def _on_Scan(self, event: dict) -> None:
+        """Count a scanned body once, for the system's scan progress.
+
+        Rings and belt clusters arrive through the same event but are not
+        bodies, so counting them would let the HUD claim a system is further
+        along than it is.
+        """
         address = int(event.get("SystemAddress") or 0)
         if self.system.address and address and address != self.system.address:
             return
         body_id = event.get("BodyID")
         if not isinstance(body_id, int):
             return
-        body = self._body(body_id, str(event.get("BodyName") or ""))
-        # Rings and belt clusters are not bodies and must not inflate the count.
-        name = body.name
+        name = str(event.get("BodyName") or "")
         if "Belt Cluster" in name or name.endswith("Ring"):
             return
-
-        self._maybe_announce_footfall(self._survey(body_id, name), event)
-
-        # Counted for the cartographics hold as well as for the system total:
-        # this is what is carried, and only a sale empties it.
-        if is_sellable_body(name):
-            self.cartography.add_scan(self.system.name, body_id)
 
         if body_id in self.system.scanned_ids:
             return
         self.system.scanned_ids.add(body_id)
         self.system.scanned_bodies += 1
-
-    # -- first footfall ----------------------------------------------------
 
     def _on_CarrierStats(self, event: dict) -> None:
         self.carriers.observe(event)

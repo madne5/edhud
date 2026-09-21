@@ -39,17 +39,6 @@ from .update_service import UpdateEvent, UpdateService
 log = logging.getLogger("elite_hud")
 
 
-def _rgb(values, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
-    """A configured colour as an RGB triple, falling back when it is unusable."""
-    try:
-        parts = [max(0, min(255, int(v))) for v in values]
-    except (TypeError, ValueError):
-        return fallback
-    if len(parts) != 3:
-        return fallback
-    return parts[0], parts[1], parts[2]
-
-
 def _monotonic() -> float:
     import time  # noqa: PLC0415
 
@@ -165,6 +154,676 @@ def default_config_path(explicit: Path | None) -> Path:
     """Kept as a thin alias so callers need not know about the install shape."""
     return resolve_config_path(explicit)
 
+
+
+
+class ReplaySource(threading.Thread):
+    """Feed a journal file into the event queue, optionally in real time."""
+
+    def __init__(
+        self,
+        path: Path,
+        sink: queue.Queue,
+        *,
+        speed: float,
+        loop: bool,
+        live: bool = False,
+    ) -> None:
+        super().__init__(name="journal-replay", daemon=True)
+        self.path = path
+        self.sink = sink
+        self.speed = speed
+        self.loop = loop
+        #: rebase timestamps onto the current wall clock so a recorded session
+        #: replays as if it were happening now (live countdowns, no stale data)
+        self.live = live
+        self._shift: timedelta | None = None
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _iter_events(self):
+        with open(self.path, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                import json
+
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict) and "event" in event:
+                    yield event
+
+    def _rebase(self, event: dict) -> dict:
+        """Shift an event's timestamps so the recording appears to be live."""
+        if not self.live:
+            return event
+        stamp = parse_timestamp(event.get("timestamp"))
+        if stamp is None:
+            return event
+        if self._shift is None:
+            self._shift = datetime.now(timezone.utc) - stamp
+            log.info("replay rebased by %s", self._shift)
+        event = dict(event)
+        event["timestamp"] = (stamp + self._shift).isoformat().replace("+00:00", "Z")
+        departure = parse_timestamp(event.get("DepartureTime"))
+        if departure is not None:
+            event["DepartureTime"] = (
+                (departure + self._shift).isoformat().replace("+00:00", "Z")
+            )
+        return event
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            previous: datetime | None = None
+            for raw in self._iter_events():
+                event = self._rebase(raw)
+                if self._stop.is_set():
+                    return
+                if self.speed > 0:
+                    stamp = parse_timestamp(event.get("timestamp"))
+                    if stamp is not None and previous is not None:
+                        delay = (stamp - previous).total_seconds() / self.speed
+                        if delay > 0:
+                            self._stop.wait(min(delay, 30.0))
+                    previous = stamp
+                # Never let a fast replay balloon memory: throttle the producer
+                # instead of dropping events the consumer has not seen yet.
+                while not self._stop.is_set() and self.sink.qsize() > 25_000:
+                    self._stop.wait(0.05)
+                self.sink.put(event)
+            if not self.loop:
+                return
+            log.info("replay finished, looping")
+
+class HudApp:
+    def __init__(self, config: Config, options: argparse.Namespace) -> None:
+        self.config = config
+        self.options = options
+        self.events: queue.Queue[dict] = queue.Queue()
+
+        self.state = GameState(
+            carrier_spool_seconds=config.carrier.spool_minutes * 60.0,
+            carrier_cooldown_seconds=config.carrier.jump_cooldown_seconds,
+            carrier_jump_seconds=config.carrier.jump_duration_seconds,
+            carrier_cancel_seconds=config.carrier.cancel_cooldown_seconds,
+            # Learned names and carrier details are cached beside the config:
+            # without a path they would be relearned every launch, and a
+            # commander who flies one ship or checks one carrier rarely would
+            # never see either named.
+            ship_cache=user_config_dir() / "ships.json",
+            carrier_cache=user_config_dir() / "carriers.json",
+        )
+
+        self.instance: SingleInstanceGuard | None = None
+        self._exit_for_update = False
+        self.watcher: JournalWatcher | None = None
+        self.replay: ReplaySource | None = None
+        self.hud = None
+        self.tray = None
+        self._app = None
+        self.status_reader: StatusReader | None = None
+
+        self.update_events: queue.Queue[UpdateEvent] = queue.Queue()
+        self.updates = UpdateService(
+            config.update,
+            current_version=__version__,
+            on_event=self.update_events.put,
+            on_before_apply=self._release_instance_guard,
+        )
+        self._update_actions: dict[str, object] = {}
+        self._monitor_group = None
+        self._update_mode_group = None
+        self._quit_after_update = False
+
+    # -- event plumbing ----------------------------------------------------
+
+    def _on_journal_event(self, event: dict) -> None:
+        self.events.put(event)
+
+    def _poll_status(self) -> None:
+        """Read Status.json for the values the journal never reports."""
+        reader = getattr(self, "status_reader", None)
+        if reader is None:
+            return
+        snapshot = reader.poll()
+        if snapshot is not None:
+            self.state.apply_status(snapshot)
+
+    def _start_status_reader(self, journal_dir) -> None:
+        """Begin polling the status file beside the journal."""
+        if journal_dir is None:
+            return
+        self.status_reader = StatusReader.beside(Path(journal_dir))
+        log.info("reading live status from %s", self.status_reader.path)
+
+    def _drain(self) -> bool:
+        """Apply queued events. Returns True when something changed."""
+        changed = False
+        for _ in range(MAX_EVENTS_PER_TICK):
+            try:
+                event = self.events.get_nowait()
+            except queue.Empty:
+                break
+            changed = True
+            self.state.apply(event)
+
+        # --print-state is a debugging aid, so it follows every change rather
+        # than only the alerts it used to wait for.
+        if changed and self.options.print_state:
+            print(self.render_text_line())
+        return changed
+
+    def _drain_updates(self) -> None:
+        while True:
+            try:
+                event = self.update_events.get_nowait()
+            except queue.Empty:
+                return
+            self._handle_update_event(event)
+
+    def _handle_update_event(self, event: UpdateEvent) -> None:
+        log.info("update: %s", event.message)
+        available_action = self._update_actions.get("install")
+        status_action = self._update_actions.get("status")
+
+        if event.kind == "available" and available_action is not None:
+            available_action.setEnabled(True)
+            available_action.setText(f"Установить {event.update.version}")  # type: ignore[attr-defined]
+        if status_action is not None and event.kind in {
+            "checking",
+            "current",
+            "available",
+            "downloading",
+            "staged",
+            "applying",
+            "applied",
+            "error",
+            "busy",
+        }:
+            status_action.setText(event.message)  # type: ignore[attr-defined]
+
+        if event.kind == "downloading" and self.tray is not None:
+            self.tray.setToolTip(f"elite-hud — {event.message} {event.progress * 100:.0f}%")
+
+        if event.kind == "applying":
+            # Yesterday's mutex would make a silent Setup abort with code 1.
+            self._release_instance_guard()
+
+        if self.tray is not None and event.kind in {"available", "staged", "error", "current"}:
+            self.tray.showMessage("elite-hud", event.message)
+
+        if event.kind == "applied" and not self._quit_after_update:
+            # The installer needs this process gone before it can replace files;
+            # a short delay lets the tray balloon appear first.
+            self._quit_after_update = True
+            self._release_instance_guard()
+            if self._app is not None:
+                from PySide6.QtCore import QTimer
+
+                QTimer.singleShot(800, self._app.quit)
+
+    def _tick(self) -> None:
+        # Advance anything that depends on the clock before drawing.
+        self.state.settle()
+        self._poll_status()
+        self._drain()
+        self._drain_updates()
+        if self.hud is not None:
+            self.hud.rebuild()
+
+    # -- text rendering (headless) -----------------------------------------
+
+    def render_text_line(self) -> str:
+        """One line of the state, for --print-state and the headless run.
+
+        Only the fields the bar still shows are reported. This is deliberately
+        built here rather than borrowed from the HUD: constructing a QWidget
+        needs a display, and the whole point of the flag is to work without one.
+        """
+        from .formatting import format_credits, format_countdown
+
+        state = self.state
+        parts: list[str] = []
+        remaining = state.carrier.seconds_until_jump()
+        if remaining is not None:
+            target = f" -> {state.carrier.target_system}" if state.carrier.target_system else ""
+            parts.append(f"ФК{target} {format_countdown(remaining)}")
+        if state.system.name:
+            bodies = f" {state.system.body_count} тел" if state.system.body_count else ""
+            parts.append(f"{state.system.name}{bodies}")
+        if state.credits is not None:
+            parts.append(format_credits(state.credits))
+        model = state.ship_model or state.ship_type
+        if model:
+            parts.append(model)
+        if state.cargo_capacity > 0:
+            parts.append(f"{max(0, state.cargo_count)}/{state.cargo_capacity} т")
+        if state.missions_known:
+            parts.append(
+                f"миссии {len(state.active_missions)}/{self.config.commander.mission_capacity}"
+            )
+        return "  |  ".join(parts) if parts else "(нет данных)"
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def start_sources(self) -> None:
+        if self.options.replay is not None:
+            self.replay = ReplaySource(
+                self.options.replay,
+                self.events,
+                speed=self.options.speed,
+                loop=self.options.replay_loop,
+                live=self.options.replay_live,
+            )
+            self.replay.start()
+            log.info("replaying %s", self.options.replay)
+            return
+
+        directory = find_journal_dir(
+            str(self.options.journal_dir) if self.options.journal_dir else self.config.journal.path
+        )
+        if directory is None:
+            log.error(
+                "no journal directory found; set journal.path in %s", CONFIG_FILENAME
+            )
+            return
+        log.info("watching %s", directory)
+        self._start_status_reader(directory)
+        self.watcher = JournalWatcher(
+            directory,
+            self._on_journal_event,
+            poll_interval=self.config.journal.poll_interval,
+            history_days=self.config.journal.history_days,
+            replay_history=self.config.journal.replay_history,
+            on_status=lambda message: log.debug("watcher: %s", message),
+        )
+        self.watcher.start()
+
+    def stop_sources(self) -> None:
+        if self.watcher is not None:
+            self.watcher.stop()
+        if self.replay is not None:
+            self.replay.stop()
+
+    def shutdown(self) -> None:
+        self.stop_sources()
+        self.updates.stop()
+        if self.hud is not None:
+            self.hud.close()
+            self.hud = None
+
+    # -- Qt ----------------------------------------------------------------
+
+    def _build_tray(self, app) -> None:
+        from PySide6.QtGui import QActionGroup, QColor
+        from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+
+        from .overlay.icons import icon_pixmap
+
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            log.debug("no system tray available")
+            return
+
+        tray = QSystemTrayIcon(icon_pixmap(64, "radar", QColor(self.config.overlay.accent)))
+        tray.setToolTip(f"elite-hud {__version__}")
+        # Qt's Windows plugin emits activated(Context) immediately before it
+        # pops the context menu, so toggling on every reason meant the overlay
+        # was hidden or shown every time the commander opened the menu -- which
+        # is the only documented way to reach Quit.
+        tray.activated.connect(self._on_tray_activated)
+
+        menu = QMenu()
+        menu.addAction("Показать / скрыть HUD", self._toggle_hud)
+        menu.addAction("Открыть config.toml", self._open_config)
+        # Which file the settings go to, on screen. Two installs, or one config
+        # that cannot be written, otherwise look identical from the outside.
+        path = self._config_path()
+        where = menu.addAction(
+            f"config: {path}" if config_is_writable(path) else f"config: НЕ ЗАПИСЫВАЕТСЯ — {path}"
+        )
+        where.setEnabled(False)
+        menu.addSeparator()
+        self._build_segment_menus(menu)
+        menu.addSeparator()
+        self._build_monitor_menu(menu)
+        menu.addSeparator()
+        self._build_update_menu(menu, app)
+        menu.addSeparator()
+        menu.addAction("Выход", app.quit)
+
+        tray.setContextMenu(menu)
+        tray.show()
+        self.tray = tray
+
+    def _config_path(self) -> Path:
+        return default_config_path(self.options.config)
+
+    def _warn_not_saved(self, what: str, path: Path) -> None:
+        """Say plainly that a change never reached the config file.
+
+        The menu tick has already moved and the HUD has already changed by the
+        time this runs, so a silent failure is indistinguishable from a success
+        until the next launch, when the setting is gone. That is exactly what
+        "the panels never stick" turned out to be.
+        """
+        log.warning(
+            "%s changed but %s could not be written; it will be back the way it "
+            "was after a restart",
+            what,
+            path,
+        )
+        if self.tray is not None:
+            self.tray.showMessage(
+                "elite-hud",
+                f"{what}: не сохранилось в {path}; после перезапуска вернётся как было",
+            )
+
+    def _build_segment_menus(self, menu) -> None:
+        """Tick blocks on and off without editing config.toml by hand.
+
+        Two submenus rather than one, because the two rows are independent: a
+        commander who is not working on Empire or Federation standing wants to
+        drop those two and keep the rest of the status row.
+        """
+        top = menu.addMenu("Верхняя строка")
+        self._add_segment_actions(top, "segments", SEGMENT_NAMES, self.config.overlay.segments)
+
+        status = menu.addMenu("Строка состояния")
+        self._add_segment_actions(
+            status, "status_segments", STATUS_SEGMENT_NAMES, self.config.overlay.status_segments
+        )
+
+    def _add_segment_actions(self, menu, key: str, names: dict, enabled: list) -> None:
+        for value, label in names.items():
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(value in enabled)
+            action.triggered.connect(
+                lambda checked=False, v=value, k=key, a=action: self._toggle_segment(k, v, checked, a)
+            )
+
+    def _toggle_segment(self, key: str, value: str, enabled: bool, action) -> None:
+        """Add or remove one segment, in the configured order."""
+        order = list(SEGMENT_NAMES if key == "segments" else STATUS_SEGMENT_NAMES)
+        current = toggle_segment(list(getattr(self.config.overlay, key)), order, value, enabled)
+        setattr(self.config.overlay, key, current)
+        self.config.validate()
+        path = self._config_path()
+        persisted = set_config_list(
+            path, "overlay", key, list(getattr(self.config.overlay, key))
+        )
+
+        # validate() may have dropped something it does not recognise; reflect
+        # that back onto the checkbox so the menu cannot lie about the state.
+        action.setChecked(value in getattr(self.config.overlay, key))
+
+        if self.hud is not None:
+            self.hud.rebuild()
+        log.info("overlay.%s = %s", key, getattr(self.config.overlay, key))
+        if not persisted:
+            self._warn_not_saved(f"overlay.{key}", path)
+
+    def _on_tray_activated(self, reason) -> None:
+        """Toggle the overlay on a real click, not on the menu opening."""
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._toggle_hud()
+
+    def _build_monitor_menu(self, menu) -> None:
+        """Let the user pick a display without editing the config by hand."""
+        from PySide6.QtGui import QActionGroup
+
+        from .overlay.hud import HudWindow
+
+        monitors = menu.addMenu("Монитор")
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        current = self.config.overlay.monitor
+        for value, label in HudWindow.screen_choices():
+            action = monitors.addAction(qt_text(label))
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.triggered.connect(lambda _checked=False, v=value: self._set_monitor(v))
+            group.addAction(action)
+        self._monitor_group = group
+
+    def _set_monitor(self, value: str) -> None:
+        self.config.overlay.monitor = value
+        self.config.validate()
+        path = self._config_path()
+        persisted = set_config_value(path, "overlay", "monitor", value)
+        if self.hud is not None:
+            self.hud.reposition(force=True)
+        where = self.hud.screen_label() if self.hud is not None else value
+        log.info("HUD monitor set to %s", value)
+        if not persisted:
+            self._warn_not_saved("overlay.monitor", path)
+        elif self.tray is not None:
+            self.tray.showMessage("elite-hud", f"HUD на мониторе: {where}")
+
+    def _build_update_menu(self, menu, app) -> None:
+        from PySide6.QtGui import QActionGroup
+
+        status = menu.addAction(
+            f"elite-hud {__version__}" if not self.updates.enabled else "обновления включены"
+        )
+        status.setEnabled(False)
+        self._update_actions["status"] = status
+
+        check = menu.addAction("Проверить обновления", self._check_updates_now)
+        self._update_actions["check"] = check
+
+        install = menu.addAction("Обновление не найдено")
+        install.setEnabled(False)
+        install.triggered.connect(lambda: self.updates.download_and_install())
+        self._update_actions["install"] = install
+
+        if not self.updates.enabled:
+            check.setEnabled(False)
+
+        modes = menu.addMenu("Режим обновлений")
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        labels = {
+            "install": "Скачивать и устанавливать",
+            "download": "Ставить при следующем запуске",
+            "notify": "Только уведомлять",
+            "off": "Выключено",
+        }
+        for mode, label in labels.items():
+            action = modes.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self.config.update.mode == mode)
+            action.triggered.connect(lambda _checked=False, m=mode: self._set_update_mode(m))
+            group.addAction(action)
+        self._update_mode_group = group
+
+        menu.addAction("Заметки о выпуске", self._open_release_page)
+
+    def _release_instance_guard(self) -> None:
+        """Drop the single-instance mutex before Setup replaces our files.
+
+        The hook runs on the update worker thread, so it must not touch Qt.
+        """
+        if self.instance is not None:
+            log.debug("releasing the instance guard so the installer can proceed")
+            self.instance.release()
+
+    def _check_updates_now(self) -> None:
+        self.updates.check_async(interact=True)
+
+    def _set_update_mode(self, mode: str) -> None:
+        self.config.update.mode = mode
+        self.config.validate()
+        path = default_config_path(self.options.config)
+        persisted = set_update_mode(path, mode)
+        self.updates.check_async(interact=True)
+        note = "" if persisted else " (не сохранилось в config.toml)"
+        log.info("update mode set to %s%s", mode, note)
+        if self.tray is not None:
+            self.tray.showMessage(
+                "elite-hud",
+                f"режим обновлений: {mode}{note}",
+            )
+
+    def _open_release_page(self) -> None:
+        import subprocess
+        import webbrowser
+
+        update = self.updates.available
+        url = (
+            update.release.html_url
+            if update is not None and update.release.html_url
+            else f"https://github.com/{self.config.update.repo}/releases"
+        )
+        try:
+            webbrowser.open(url)
+        except Exception:
+            log.exception("cannot open %s", url)
+
+    def _toggle_hud(self) -> None:
+        if self.hud is None:
+            return
+        if self.hud.isVisible():
+            self.hud.hide()
+        else:
+            self.hud.show_overlay()
+
+    def _open_config(self) -> None:
+        import subprocess
+
+        path = default_config_path(self.options.config)
+        if not path.is_file():
+            ensure_config_file(path)
+        try:
+            if sys.platform == "win32":
+                import os
+
+                os.startfile(path)  # noqa: S606 - intentional shell open
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception:
+            log.exception("cannot open %s", path)
+
+    def _prepare_updates(self, interactive_ui: bool) -> None:
+        """Apply a staged update, then start watching for new ones."""
+        from .updater import clear_stale_marker
+
+        if clear_stale_marker():
+            log.info("removed a leftover update marker from an interrupted update")
+        self.updates.prune_downloads()
+
+        if self.updates.enabled and self.config.update.mode == "download":
+            if self.updates.apply_pending():
+                # The installer needs this process gone; exit without a UI.
+                log.info("exiting so the staged update can be installed")
+                self._exit_for_update = True
+                return
+
+        if not self.updates.enabled:
+            return
+        self.updates.start()
+        if interactive_ui:
+            self._schedule_update_checks()
+
+    def _schedule_update_checks(self) -> None:
+        from PySide6.QtCore import QTimer
+
+        interval_ms = int(self.config.update.check_interval_hours * 3600 * 1000)
+        timer = QTimer(self._app)
+        timer.setInterval(max(60_000, interval_ms))
+
+        def tick() -> None:
+            if self.updates.due_for_check():
+                self.updates.check_async()
+
+        timer.timeout.connect(tick)
+        timer.start()
+        self._update_timer = timer
+
+    def run(self) -> int:
+        if not self.options.headless:
+            from PySide6.QtCore import QTimer
+            from PySide6.QtWidgets import QApplication
+
+            from .overlay.hud import HudWindow
+
+            # The QApplication must exist before anything creates a QTimer.
+            self._app = QApplication(sys.argv[:1])
+            self._app.setApplicationName("elite-hud")
+            self._app.setQuitOnLastWindowClosed(False)
+
+            if not self.options.force and self.options.replay is None:
+                self.instance = SingleInstanceGuard()
+                if not self.instance.acquire():
+                    log.error(
+                        "elite-hud уже запущен (второй экземпляр не нужен); "
+                        "используйте --force, чтобы обойти проверку"
+                    )
+                    return 3
+
+            # May apply a staged update and ask us to exit without a UI.
+            self._prepare_updates(interactive_ui=True)
+            if self._exit_for_update:
+                return 0
+
+            self.hud = HudWindow(self.config, self.state)
+            self.hud.show_overlay()
+            self._build_tray(self._app)
+
+            interval = max(16, int(1000 / self.config.overlay.refresh_hz))
+
+            def on_quit(*_args) -> None:
+                self.shutdown()
+                self._app.quit()
+
+            signal.signal(signal.SIGINT, lambda *_: on_quit())
+            # Lets Python-level signal handlers run while Qt owns the loop.
+            keepalive = QTimer(self._app)
+            keepalive.start(200)
+            keepalive.timeout.connect(lambda: None)
+            self._app.aboutToQuit.connect(self.shutdown)
+
+            timer = QTimer(self._app)
+            timer.timeout.connect(self._tick)
+            timer.start(interval)
+
+            self.start_sources()
+            log.info("HUD running; exit from the tray icon or press Ctrl+C")
+            return self._app.exec()
+
+        # Headless: plain loop, useful on machines without a display.
+        self._prepare_updates(interactive_ui=False)
+        self.start_sources()
+        log.info("headless mode; Ctrl+C to stop")
+        try:
+            while True:
+                self._tick()
+                if self.replay is not None and not self._replay_alive():
+                    # Producer is done; keep draining until the queue is empty.
+                    while not self.events.empty():
+                        self._tick()
+                    break
+                time.sleep(0.25)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.shutdown()
+        return 0
+
+    def _replay_alive(self) -> bool:
+        return self.replay is not None and self.replay.is_alive()
 
 def main(argv: list[str] | None = None) -> int:
     options = build_parser().parse_args(argv)

@@ -281,29 +281,34 @@ class HudWindow(QWidget):
 
     def _status_segments(self) -> list[Segment]:
         """The always-visible second row."""
-        cfg = self.config.overlay
         style = self._status_style
         segments: list[Segment] = []
 
-        for name in cfg.status_segments:
-            segment: Segment | None = None
-            if name == "mode":
-                segment = self._mode_segment(0.0)
-            elif name == "ship":
-                segment = self._ship_segment(0.0)
-            elif name == "missions":
-                segment = self._missions_segment(0.0)
-            elif name == "next":
-                segment = self._next_segment(0.0)
-            elif name == "carriers":
+        for name in self.config.overlay.status_segments:
+            if name == "carriers":
                 # One segment per carrier, so two of them read as two entries
                 # rather than one long line.
                 segments.extend(self._carrier_segments())
-            elif name == "crime":
-                segment = self._crime_segment(0.0)
+                continue
+            segment = self._build_segment(name, 0.0)
             if segment is not None:
                 segments.append(segment)
         return self._apply_leads(segments, style.metrics.height() * 0.95)
+
+    def _build_segment(self, name: str, lead: float) -> Segment | None:
+        """Build one named segment, or None when it has nothing to show.
+
+        Both rows go through the SEGMENT_BUILDERS table. They used to dispatch
+        separately, and the main row's chain only covered carrier, system,
+        balance and cargo -- so "ship" and "missions" sat in the shipped top
+        row while drawing nothing at all. One table means a name the config
+        accepts can no longer be quietly ignored by the bar.
+
+        "carriers" is the one accepted name that is not in the table: it yields
+        a segment per carrier rather than a single segment.
+        """
+        builder = self.SEGMENT_BUILDERS.get(name)
+        return None if builder is None else builder(self, lead)
 
     def _mode_segment(self, lead: float) -> Segment | None:
         mode = self.state.game_mode
@@ -479,15 +484,7 @@ class HudWindow(QWidget):
         segments: list[Segment] = []
 
         for name in cfg.segments:
-            segment: Segment | None = None
-            if name == "carrier":
-                segment = self._carrier_segment(0.0)
-            elif name == "system":
-                segment = self._system_segment(0.0)
-            elif name == "balance":
-                segment = self._balance_segment(0.0)
-            elif name == "cargo":
-                segment = self._cargo_segment(0.0)
+            segment = self._build_segment(name, 0.0)
             if segment is not None:
                 segments.append(segment)
 
@@ -970,6 +967,30 @@ class HudWindow(QWidget):
         self._topmost_timer.stop()
         self._screen_timer.stop()
         super().closeEvent(event)
+
+    # -- segment table -----------------------------------------------------
+
+    #: Every segment name either row can draw, as name -> builder.
+    #:
+    #: Declared at the end of the class body because it holds the functions
+    #: themselves rather than their names, which keeps a renamed method from
+    #: quietly detaching from the table. "carriers" is deliberately absent: it
+    #: is the one accepted name that expands to a segment per carrier.
+    #:
+    #: tests/test_hud.py asserts this covers every name in VALID_SEGMENTS and
+    #: VALID_STATUS_SEGMENTS, because a config that accepts a name the bar
+    #: cannot draw is worse than one that rejects it.
+    SEGMENT_BUILDERS = {
+        "carrier": _carrier_segment,
+        "system": _system_segment,
+        "balance": _balance_segment,
+        "cargo": _cargo_segment,
+        "ship": _ship_segment,
+        "missions": _missions_segment,
+        "mode": _mode_segment,
+        "next": _next_segment,
+        "crime": _crime_segment,
+    }
 
 
 def _monotonic() -> float:
