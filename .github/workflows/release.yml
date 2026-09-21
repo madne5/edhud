@@ -72,9 +72,27 @@ jobs:
           python -m pip install -r requirements.txt pyinstaller
 
       - name: Run the test suite
+        shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests -t . -v
+        run: |
+          set +e
+          python -m unittest discover -s tests -t . -v 2>&1 | tee tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # The same reporting as ci.yml: a failing test and its assertion text
+            # become check annotations, which are readable without a token. This
+            # step failed once and the only thing visible from outside was "exit
+            # code 1", which is not enough to act on.
+            grep -E '^(FAIL|ERROR): ' tests.log | sort -u | while IFS= read -r line; do
+              echo "::error title=${line}::${line}"
+            done
+            grep -hE '^(AssertionError|.*Error|.*Exception|FAILED)' tests.log \
+              | head -20 | while IFS= read -r line; do
+              echo "::error title=failure detail::${line}"
+            done
+          fi
+          exit $status
 
       - name: Generate the application icon
         run: python tools/make_icon.py
