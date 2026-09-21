@@ -23,6 +23,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from .notices import NoticeStyle, Rendered
+
 log = logging.getLogger(__name__)
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "materials.json"
@@ -51,15 +53,20 @@ class Material:
         return self.name or self.symbol
 
 
+#: Journal category -> the glyph that stands for it in the bar. Raw is drawn as
+#: a crystal, manufactured as a cog, encoded as a signal: three shapes that are
+#: told apart at a glance, which is the point of having them at all.
+CATEGORY_GLYPHS = {"raw": "gem", "manufactured": "gear", "encoded": "signal"}
+
+
 @dataclass(frozen=True, slots=True)
 class MaterialNotice:
-    """One pickup, ready to be shown: "+1 Сера (Редкость: 1)  Всего: 285".
+    """One pickup: "+3 Вольфрам (Сырьевой, Редкость: 3)  Всего: 79".
 
-    Assembled in the state layer because that is where the label wording and the
-    running total live; the overlay only draws it. ``total`` is None until a
-    ``Materials`` event has reported the whole hold -- the journal states the
-    hold once at login, so a pickup seen before that would otherwise announce a
-    total of one for a hold of hundreds.
+    The facts only. ``total`` is None until a ``Materials`` event has reported
+    the whole hold -- the journal states the hold once at login, so a pickup seen
+    before that would otherwise announce a total of one for a hold of hundreds --
+    and how much of that to show is decided at render time, from the config.
     """
 
     symbol: str
@@ -67,12 +74,15 @@ class MaterialNotice:
     count: int = 1
     rarity: int = 0
     total: int | None = None
+    #: "Raw" | "Manufactured" | "Encoded", or "" when the table does not know it.
+    category: str = ""
 
     def text(
         self,
         *,
         rarity_label: str = "Редкость",
         total_label: str = "Всего",
+        category_label: str = "",
         show_rarity: bool = True,
         show_total: bool = True,
     ) -> str:
@@ -80,14 +90,34 @@ class MaterialNotice:
 
         What to include is the caller's decision -- the state records what
         happened, the overlay decides what is worth drawing from config -- so
-        both switches are applied here rather than at collection time.
+        every switch is applied here rather than at collection time.
         """
-        line = f"+{self.count} {self.name}"
+        details = []
+        if category_label:
+            details.append(category_label)
         if self.rarity and show_rarity:
-            line = f"{line} ({rarity_label}: {self.rarity})"
+            details.append(f"{rarity_label}: {self.rarity}")
+        line = f"+{self.count} {self.name}"
+        if details:
+            line = f"{line} ({', '.join(details)})"
         if self.total is not None and show_total:
             line = f"{line}  {total_label}: {self.total}"
         return line
+
+    def render(self, style: "NoticeStyle") -> "Rendered":
+        """The line, its glyph and its colour, as the configuration wants them."""
+        key = self.category.strip().casefold()
+        return Rendered(
+            text=self.text(
+                rarity_label=style.rarity_label,
+                total_label=style.total_label,
+                category_label=style.category_labels.get(key, ""),
+                show_rarity=style.show_rarity,
+                show_total=style.show_total,
+            ),
+            glyph=CATEGORY_GLYPHS.get(key, "leaf"),
+            colour=style.category_colours.get(key, "") or style.success,
+        )
 
 
 class MaterialTable:

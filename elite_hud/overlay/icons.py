@@ -19,6 +19,7 @@ GLYPHS = (
     "bio",
     "star",
     "gem",
+    "gear",
     "warning",
     "signal",
     "globe",
@@ -168,6 +169,29 @@ def _draw_gem(painter: QPainter, r: QRectF) -> None:
     painter.drawLine(QPointF(r.center().x(), mid_y), QPointF(r.center().x(), bottom))
 
 
+def _draw_gear(painter: QPainter, r: QRectF) -> None:
+    """A cog: the shape for manufactured materials.
+
+    Drawn as a ring with teeth rather than a filled disc, so it still reads at
+    the 13-16 px the bar uses -- a filled cog turns into a blob at that size.
+    """
+    import math
+
+    center = r.center()
+    outer = min(r.width(), r.height()) * 0.42
+    inner = outer * 0.46
+    painter.drawEllipse(center, inner, inner)
+    for index in range(8):
+        angle = math.radians(index * 45)
+        cos, sin = math.cos(angle), math.sin(angle)
+        painter.drawLine(
+            QPointF(center.x() + cos * inner, center.y() + sin * inner),
+            QPointF(center.x() + cos * outer, center.y() + sin * outer),
+        )
+    # The hub, so the teeth read as part of one object rather than a starburst.
+    painter.drawEllipse(center, outer * 0.9, outer * 0.9)
+
+
 def _draw_warning(painter: QPainter, r: QRectF) -> None:
     path = QPainterPath()
     path.moveTo(r.center().x(), r.top() + r.height() * 0.10)
@@ -304,6 +328,7 @@ _DRAWERS = {
     "bio": _draw_bio,
     "star": _draw_star,
     "gem": _draw_gem,
+    "gear": _draw_gear,
     "warning": _draw_warning,
     "signal": _draw_signal,
 }

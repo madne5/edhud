@@ -262,6 +262,7 @@ class HudApp:
             carrier_cache=user_config_dir() / "carriers.json",
             materials_enabled=config.materials.enabled,
             material_notify=config.materials.notify_collected,
+            show_docking_denied=config.overlay.show_docking_denied,
             rarity_label=config.overlay.labels.rarity,
             total_label=config.overlay.labels.total,
         )
@@ -322,26 +323,28 @@ class HudApp:
         # --print-state is a debugging aid, so it follows every change rather
         # than only the alerts it used to wait for.
         if changed:
-            self._publish_material_notices()
+            self._publish_notices()
             if self.options.print_state:
                 print(self.render_text_line())
         return changed
 
-    def _publish_material_notices(self) -> None:
-        """Hand the state's queued pickups to the overlay.
+    def _publish_notices(self) -> None:
+        """Hand the state's queued notices to the overlay.
 
-        The state layer knows the rarity and the running total and the overlay
-        knows nothing, so the two meet here. Only the last one is shown: a
-        mining laser fires several a second, and a queue of them would keep the
-        line on screen long after the commander stopped caring.
+        The state layer knows the facts and the overlay knows how to draw them,
+        so the two meet here. Only the last one is shown: a mining laser fires
+        several pickups a second, and a queue of them would keep the line on
+        screen long after the commander stopped caring. The rest go to the log,
+        where nothing is lost.
         """
-        notices = self.state.drain_material_notices()
+        notices = self.state.drain_notices()
         if not notices:
             return
+        style = self.hud.notice_style() if self.hud is not None else None
         for notice in notices[:-1]:
-            log.debug("pickup (superseded): %s", notice.text())
+            log.debug("notice (superseded): %s", notice.render(style).text if style else notice)
         latest = notices[-1]
-        log.info("pickup: %s", latest.text())
+        log.info("notice: %s", latest.render(style).text if style else latest)
         if self.hud is not None:
             self.hud.push_notice(latest)
 

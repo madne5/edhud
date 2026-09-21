@@ -93,16 +93,18 @@ class ValidationTests(unittest.TestCase):
 
 
 class ConfigLocationTests(unittest.TestCase):
-    """Where the config goes depends on how the program was installed.
+    """Where the config goes, and why it has to be the same place every time.
 
-    The installer runs elevated and places files under Program Files, but the
-    program itself runs as the ordinary user on purpose -- so the install
-    directory is read-only for it. Writing there unconditionally made a fresh
-    install crash on first launch with PermissionError.
+    Two rules and nothing else: an existing file always wins, and a new one is
+    created in the user's profile. Writability deliberately plays no part -- it
+    is not a stable property, since an elevated run can write to the install
+    directory and an ordinary one cannot, so letting it decide meant the two runs
+    read and wrote two different files and every setting looked unsaved.
 
-    Writability is patched rather than simulated with chmod: Windows ignores
-    POSIX mode bits on directories, so a permission-based test would pass on
-    Linux and macOS while silently testing nothing on the real target.
+    The user's profile matters for a second reason: an installer owns the
+    directory the program is installed into, so settings kept there are lost the
+    next time the program is updated or installed somewhere else. That is what
+    "I have to choose my panels again after every update" was.
     """
 
     def setUp(self) -> None:
@@ -118,25 +120,71 @@ class ConfigLocationTests(unittest.TestCase):
             del sys.frozen  # type: ignore[attr-defined]
         sys.executable = self._executable
 
-    def test_installed_copy_uses_the_user_profile(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            install_dir = Path(tmp) / "elite-hud"
-            install_dir.mkdir()
-            sys.frozen = True  # type: ignore[attr-defined]
-            sys.executable = str(install_dir / "elite-hud.exe")
-            with mock.patch("elite_hud.config.is_writable_dir", return_value=False):
-                resolved = resolve_config_path(None)
-            self.assertEqual(resolved, user_config_dir() / "config.toml")
+    def _frozen_at(self, install_dir: Path, *, user_home: Path) -> None:
+        install_dir.mkdir(parents=True, exist_ok=True)
+        sys.frozen = True  # type: ignore[attr-defined]
+        sys.executable = str(install_dir / "elite-hud.exe")
+        home = mock.patch("elite_hud.config.user_config_dir", return_value=user_home)
+        home.start()
+        self.addCleanup(home.stop)
 
-    def test_portable_copy_keeps_the_config_next_to_the_executable(self) -> None:
+    def test_a_new_config_goes_to_the_user_profile(self) -> None:
+        """Never beside the program: an installer owns that directory."""
         with tempfile.TemporaryDirectory() as tmp:
-            install_dir = Path(tmp) / "elite-hud"
-            install_dir.mkdir()
-            sys.frozen = True  # type: ignore[attr-defined]
-            sys.executable = str(install_dir / "elite-hud.exe")
+            root = Path(tmp)
+            self._frozen_at(root / "Program Files" / "elite-hud",
+                            user_home=root / "AppData" / "elite-hud")
+            self.assertEqual(
+                resolve_config_path(None), root / "AppData" / "elite-hud" / "config.toml"
+            )
+
+    def test_writability_of_the_install_directory_changes_nothing(self) -> None:
+        """The whole of the old bug, in one assertion.
+
+        The same install has to resolve to the same file elevated and unelevated;
+        when it did not, a setting saved by one run was invisible to the other.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_dir = root / "Program Files" / "elite-hud"
+            home = root / "AppData" / "elite-hud"
+            self._frozen_at(install_dir, user_home=home)
+            home.mkdir(parents=True)
+            (home / "config.toml").write_text("", encoding="utf-8")
+            with mock.patch("elite_hud.config.is_writable_dir", return_value=False):
+                unelevated = resolve_config_path(None)
             with mock.patch("elite_hud.config.is_writable_dir", return_value=True):
-                resolved = resolve_config_path(None)
-            self.assertEqual(resolved, install_dir.resolve() / "config.toml")
+                elevated = resolve_config_path(None)
+            self.assertEqual(unelevated, elevated)
+            self.assertEqual(unelevated, home / "config.toml")
+
+    def test_a_config_beside_the_program_is_honoured(self) -> None:
+        """A deliberate portable setup, even in a read-only directory.
+
+        It used to be abandoned when the directory could not be written, which
+        sent the program off to create a fresh default elsewhere: the settings
+        vanished while their file sat right there.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_dir = root / "elite-hud-portable"
+            self._frozen_at(install_dir, user_home=root / "AppData" / "elite-hud")
+            (install_dir / "config.toml").write_text("", encoding="utf-8")
+            with mock.patch("elite_hud.config.is_writable_dir", return_value=False):
+                self.assertEqual(
+                    resolve_config_path(None), install_dir.resolve() / "config.toml"
+                )
+
+    def test_the_user_profile_wins_over_a_file_beside_the_program(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_dir = root / "elite-hud"
+            home = root / "AppData" / "elite-hud"
+            self._frozen_at(install_dir, user_home=home)
+            (install_dir / "config.toml").write_text("", encoding="utf-8")
+            home.mkdir(parents=True)
+            (home / "config.toml").write_text("", encoding="utf-8")
+            self.assertEqual(resolve_config_path(None), home / "config.toml")
 
     def test_an_explicit_path_always_wins(self) -> None:
         explicit = Path(tempfile.gettempdir()) / "custom" / "config.toml"

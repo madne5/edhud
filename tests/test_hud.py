@@ -89,6 +89,7 @@ if QT_SKIP_REASON is None:
     from PySide6.QtWidgets import QApplication
 
 from elite_hud.config import Config
+from elite_hud.materials import MaterialNotice
 from elite_hud.state import GameState
 
 #: The shipped rows, read from the configuration so the sentinels cannot drift
@@ -257,8 +258,6 @@ class HudRenderTests(unittest.TestCase):
 
     def test_a_pickup_appears_in_the_bar(self) -> None:
         """The one notification the project kept, on its own."""
-        from elite_hud.materials import MaterialNotice
-
         config = Config()
         hud = self._hud(config, make_state(config))
         before = hud.bar_text()
@@ -274,8 +273,6 @@ class HudRenderTests(unittest.TestCase):
         hud.close()
 
     def test_the_pickup_honours_the_config_switches(self) -> None:
-        from elite_hud.materials import MaterialNotice
-
         config = Config()
         config.materials.rarity = False
         config.materials.show_total = False
@@ -288,10 +285,57 @@ class HudRenderTests(unittest.TestCase):
         self.assertNotIn("Всего", hud.bar_text())
         hud.close()
 
+    def test_a_pickup_carries_its_category_colour_and_glyph(self) -> None:
+        """The three categories are told apart by word, colour and shape."""
+        config = Config()
+        hud = self._hud(config, make_state(config))
+        for kind, word, glyph, colour in (
+            ("Raw", "Сырьевой", "gem", config.materials.raw_color),
+            ("Manufactured", "Промышленный", "gear", config.materials.manufactured_color),
+            ("Encoded", "Данные", "signal", config.materials.encoded_color),
+        ):
+            with self.subTest(category=kind):
+                hud.push_notice(
+                    MaterialNotice(symbol="x", name="Нечто", count=2, rarity=1,
+                                   total=9, category=kind)
+                )
+                row = next(r for r in hud._rows if r.kind == "notice")
+                segment = row.segments[0]
+                self.assertIn(word, hud.notice_text())
+                self.assertEqual(segment.glyph, glyph)
+                self.assertEqual(segment.spans[0].color, colour)
+                self.assertEqual(row.accent, colour)
+        hud.close()
+
+    def test_a_refused_docking_request_becomes_a_line(self) -> None:
+        from elite_hud.notices import DockingNotice
+
+        config = Config()
+        hud = self._hud(config, make_state(config))
+        hud.push_notice(DockingNotice(station="Bainbridge Market", reason="Distance"))
+        row = next(r for r in hud._rows if r.kind == "notice")
+        self.assertEqual(
+            hud.notice_text(),
+            "Bainbridge Market: стыковка запрещена — слишком далеко от станции",
+        )
+        self.assertEqual(row.segments[0].glyph, "warning")
+        self.assertEqual(row.segments[0].spans[0].color, config.overlay.warning)
+        hud.close()
+
+    def test_glyphs_off_leaves_the_notice_text_alone(self) -> None:
+        config = Config()
+        config.overlay.show_glyphs = False
+        hud = self._hud(config, make_state(config))
+        hud.push_notice(
+            MaterialNotice(symbol="iron", name="Железо", count=1, rarity=1, category="Raw")
+        )
+        row = next(r for r in hud._rows if r.kind == "notice")
+        self.assertIsNone(row.segments[0].glyph)
+        self.assertIn("Сырьевой", hud.notice_text())
+        hud.close()
+
     def test_the_pickup_goes_away_by_itself(self) -> None:
         """Nothing to dismiss: the line is a glance, not a panel."""
-        from elite_hud.materials import MaterialNotice
-
         config = Config()
         config.materials.display_seconds = 0.5
         hud = self._hud(config, make_state(config))

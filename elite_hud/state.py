@@ -16,6 +16,7 @@ from . import jump_range
 from .carriers import CarrierBook
 from .crime import CrimeRecord
 from .materials import MaterialNotice, MaterialTable
+from .notices import DockingNotice
 from .ships import ShipNames
 
 log = logging.getLogger(__name__)
@@ -296,6 +297,7 @@ class GameState:
         material_notify: bool = True,
         rarity_label: str = "Редкость",
         total_label: str = "Всего",
+        show_docking_denied: bool = True,
     ) -> None:
         #: Where the commander is heading next.
         self.jump_plan = JumpPlan()
@@ -353,7 +355,11 @@ class GameState:
         #: Labels, so the wording lives in config rather than in this module.
         self.rarity_label = rarity_label
         self.total_label = total_label
-        self.material_notices: list[MaterialNotice] = []
+        #: Facts worth showing for a few seconds, oldest first: material
+        #: pickups and refused docking requests. The overlay turns them into
+        #: text, because how they read is a matter of configuration.
+        self.notices: list[MaterialNotice | DockingNotice] = []
+        self.show_docking_denied = show_docking_denied
 
         self.last_event: str = ""
         self.last_event_at: datetime | None = None
@@ -757,6 +763,21 @@ class GameState:
     def _on_Undocked(self, event: dict) -> None:
         self.carriers.observe(event)
 
+    def _on_DockingDenied(self, event: dict) -> None:
+        """A refused docking request, with the game's own reason.
+
+        Worth a line because the reason is not always obvious from the cockpit:
+        a carrier whose pads are all taken looks exactly like one that is simply
+        too far away, and the difference decides whether to wait or to fly.
+        """
+        if self.show_docking_denied:
+            self.notices.append(
+                DockingNotice(
+                    station=str(event.get("StationName") or ""),
+                    reason=str(event.get("Reason") or ""),
+                )
+            )
+
     def _on_CarrierStats(self, event: dict) -> None:
         self.carriers.observe(event)
         self.carrier.carrier_id = int(event.get("CarrierID") or self.carrier.carrier_id or 0)
@@ -816,13 +837,9 @@ class GameState:
 
     # -- engineering materials ---------------------------------------------
 
-    def drain_material_notices(self) -> list[MaterialNotice]:
-        """Take the pickups queued since the last call.
-
-        The state layer knows the rarity and the running total and the overlay
-        knows nothing, so the two meet here rather than in either of them.
-        """
-        notices, self.material_notices = self.material_notices, []
+    def drain_notices(self) -> list[MaterialNotice | DockingNotice]:
+        """Take the notices queued since the last call."""
+        notices, self.notices = self.notices, []
         return notices
 
     def _on_Materials(self, event: dict) -> None:
@@ -924,12 +941,13 @@ class GameState:
     def _announce_material(self, symbol: str, count: int, localised: str) -> None:
         """Queue the pickup line, e.g. "+1 Сера (Редкость: 1)  Всего: 285"."""
         material = self.material_table.get(symbol)
-        self.material_notices.append(
+        self.notices.append(
             MaterialNotice(
                 symbol=symbol,
                 name=self.material_table.display_name(symbol, localised),
                 count=count,
                 rarity=material.rarity if material else 0,
+                category=material.kind if material else "",
                 # Unknown is not zero: without a Materials event the hold has
                 # never been reported, and announcing "Всего: 1" for a hold of
                 # hundreds is worse than saying nothing about the total.

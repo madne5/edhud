@@ -52,7 +52,6 @@ class LabelConfig:
     bodies: str = "тел"
     #: marks a value that is a lower bound for a whole genus, e.g. "≥19.0M"
     waiting: str = "ожидание журнала"
-    no_system: str = "нет данных"
     #: notification title when landing on a body would be a first footfall
     #: unredeemed value: "К зачислению 343.3M"
     #: suffix naming how many samples back the figure: "5 проб"
@@ -74,9 +73,13 @@ class LabelConfig:
     #: units for the cartography counts
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
-    #: material pickup line: "+1 Сера (Редкость: 1)  Всего: 285"
+    #: material pickup line: "+3 Вольфрам (Сырьевой, Редкость: 3)  Всего: 79"
     rarity: str = "Редкость"
     total: str = "Всего"
+    #: the three material categories, as the journal spells them
+    material_raw: str = "Сырьевой"
+    material_manufactured: str = "Промышленный"
+    material_encoded: str = "Данные"
     #: plural noun for remaining jumps
     jumps: str = "прыжка"
 
@@ -126,18 +129,19 @@ class OverlayConfig:
             "missions",
         ]
     )
-    #: Segments in the always-visible second row.
-    #: Available: mode, empire, federation, ship, missions, unsold, next,
-    #: faction, crime.
-    status_segments: list[str] = field(
-        default_factory=lambda: ["next", "carriers"]
-    )
-    #: Show the percentage towards the next superpower rank.
+    #: Segments in the always-visible second row. Available: next, carriers,
+    #: mode, crime.
     #:
-    #: Off by default is tempting, but the figure is genuine -- it is what the
-    #: game reported at login and it resets on promotion. It simply cannot move
-    #: during a session, because Rank and Progress are written once at login.
-    superpower_progress: bool = True
+    #: Everything is on by default. A segment that has nothing to say stays
+    #: hidden anyway -- the crime readout vanishes for a clean commander, and the
+    #: jump target for one with no route -- so shipping them off bought nothing
+    #: and cost a commander a trip into the tray menu to discover a feature
+    #: existed at all.
+    status_segments: list[str] = field(
+        default_factory=lambda: ["next", "carriers", "mode", "crime"]
+    )
+    #: Show the line that explains a refused docking request, with its reason.
+    show_docking_denied: bool = True
     #: Draw a subtle rounded plate behind the text.
     show_background: bool = True
     #: Prefix each segment with a small glyph.
@@ -198,8 +202,13 @@ class MaterialsConfig:
     rarity: bool = True
     #: Append "Всего: N" once a Materials event has reported the whole hold.
     show_total: bool = True
-    #: How long the line stays on screen.
+    #: How long a line stays on screen.
     display_seconds: float = 4.0
+    #: One colour per category, so a pickup says what kind of material it was
+    #: before the word is read: minerals, parts, data.
+    raw_color: str = "#e0a458"
+    manufactured_color: str = "#5ec8e0"
+    encoded_color: str = "#b98ce0"
 
 
 @dataclass
@@ -652,32 +661,30 @@ def is_writable_dir(path: Path) -> bool:
     return True
 
 
-def looks_installed(directory: Path) -> bool:
-    """Whether ``directory`` is an installed copy rather than a portable one.
-
-    Inno Setup leaves its uninstaller beside the program, and it is the only
-    marker that distinguishes the two without asking whether this particular
-    process happens to be elevated -- which is exactly the question that must
-    not decide where the configuration lives.
-    """
-    for name in ("unins000.exe", "unins001.exe"):
-        if (directory / name).is_file():
-            return True
-    return False
-
-
 def resolve_config_path(explicit: "Path | None" = None) -> Path:
     """Where the configuration lives. The same answer on every launch.
 
-    This used to be decided by whether the program's own directory was writable
-    *at that moment*, which is not a stable property: an installed copy normally
-    runs unelevated and cannot write to ``Program Files``, but when the
-    auto-updater's elevated installer relaunches it, it can. The two runs then
-    read and wrote two different files, so a panel switched on in one was gone
-    in the next -- the setting looked like it had never been saved.
+    Two rules, in this order, and nothing else:
 
-    Now the install shape decides, an existing file always wins over a
-    computed one, and nothing depends on privilege.
+    1. An existing file always wins over a computed one. Wherever the settings
+       are, they keep being used.
+    2. A new file is created in the per-user directory -- ``%APPDATA%`` on
+       Windows -- never beside the program.
+
+    The second rule is what makes the settings survive an update. A file beside
+    the program sits in the install directory, and an installer owns that
+    directory: replacing it, or installing somewhere else next time, takes the
+    settings with it. The per-user directory is not the installer's to touch, so
+    updating cannot lose anything.
+
+    What this replaced decided by whether the program's own directory was
+    writable *at that moment*, which is not a stable property -- an installed
+    copy normally runs unelevated and cannot write to ``Program Files``, but an
+    elevated run can. The two runs then read and wrote two different files, and a
+    panel switched on in one was gone in the next. An existing ``config.toml``
+    beside the program is still honoured, because that is someone's deliberate
+    portable setup, but being unable to *write* it no longer sends the program
+    looking somewhere else: it reads the file it found and says it cannot save.
     """
     import sys  # noqa: PLC0415
 
@@ -691,22 +698,9 @@ def resolve_config_path(explicit: "Path | None" = None) -> Path:
     beside = executable_dir / CONFIG_FILENAME
     per_user = user_config_dir() / CONFIG_FILENAME
 
-    if looks_installed(executable_dir):
-        # An installed copy belongs in the per-user directory; a file left
-        # beside the program by an elevated run is only used if nothing else
-        # exists, so that such a run stops hijacking the settings.
-        if per_user.is_file():
-            return per_user
-        if beside.is_file() and is_writable_dir(executable_dir):
-            return beside
-        return per_user
-
-    # A portable copy keeps its settings with it.
-    if beside.is_file():
-        return beside
     if per_user.is_file():
         return per_user
-    if is_writable_dir(executable_dir):
+    if beside.is_file():
         return beside
     return per_user
 

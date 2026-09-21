@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import Config
 from ..formatting import format_countdown, format_credits
+from ..notices import DockingNotice, NoticeStyle, Rendered
 from ..materials import MaterialNotice
 from ..state import GameState
 from . import win32
@@ -154,8 +155,8 @@ class HudWindow(QWidget):
         self._row_boxes: list[tuple[Row, float, float, float]] = []
         self._last_size: tuple[int, int] = (0, 0)
         self._last_position: tuple[int, int] | None = None
-        #: The pickup being shown, and when it stops being shown.
-        self._notice: MaterialNotice | None = None
+        #: The notice being shown, and when it stops being shown.
+        self._notice: MaterialNotice | DockingNotice | None = None
         self._notice_until: float = 0.0
 
         self._font, self._bold_font = self._build_fonts()
@@ -289,30 +290,55 @@ class HudWindow(QWidget):
 
     # -- transient notices -------------------------------------------------
 
-    def push_notice(self, notice: MaterialNotice) -> None:
-        """Show a pickup for a few seconds, above the status row.
+    def push_notice(self, notice: MaterialNotice | DockingNotice) -> None:
+        """Show one line for a few seconds, above the status row.
 
-        Deliberately the whole of the notification system: one line of text that
-        fades by itself. No sound, no border, nothing to dismiss -- the bar is a
-        glance, and a pickup is worth a glance.
+        Deliberately the whole of the notification system: text that fades by
+        itself. No sound, no border, nothing to dismiss -- the bar is a glance,
+        and a pickup or a refused docking request is worth a glance.
         """
         self._notice = notice
         self._notice_until = _monotonic() + max(0.5, self.config.materials.display_seconds)
         self.rebuild()
 
-    def notice_text(self) -> str:
-        """The transient line as plain text, or "" when nothing is showing."""
-        notice = self._notice
-        if notice is None:
-            return ""
-        cfg = self.config.materials
-        labels = self.config.overlay.labels
-        return notice.text(
+    def notice_style(self) -> NoticeStyle:
+        """The configuration a notice needs to render itself."""
+        overlay = self.config.overlay
+        materials = self.config.materials
+        labels = overlay.labels
+        return NoticeStyle(
+            category_labels={
+                "raw": labels.material_raw,
+                "manufactured": labels.material_manufactured,
+                "encoded": labels.material_encoded,
+            },
+            category_colours={
+                "raw": materials.raw_color,
+                "manufactured": materials.manufactured_color,
+                "encoded": materials.encoded_color,
+            },
             rarity_label=labels.rarity,
             total_label=labels.total,
-            show_rarity=cfg.rarity,
-            show_total=cfg.show_total,
+            show_rarity=materials.rarity,
+            show_total=materials.show_total,
+            foreground=overlay.foreground,
+            accent=overlay.accent,
+            danger=overlay.danger,
+            warning=overlay.warning,
+            success=overlay.success,
         )
+
+    def render_notice(self) -> Rendered | None:
+        """The notice as text, glyph and colour, or None when there is none."""
+        notice = self._notice
+        if notice is None:
+            return None
+        return notice.render(self.notice_style())
+
+    def notice_text(self) -> str:
+        """The transient line as plain text, or "" when nothing is showing."""
+        rendered = self.render_notice()
+        return rendered.text if rendered is not None else ""
 
     def _notice_active(self) -> bool:
         return self._notice is not None and _monotonic() < self._notice_until
@@ -330,19 +356,19 @@ class HudWindow(QWidget):
             # the tick that would have cleared it never runs.
             self._notice = None
             return None
-        text = self.notice_text()
-        if not text:
+        rendered = self.render_notice()
+        if rendered is None or not rendered.text:
             self._notice = None
             return None
 
         cfg = self.config.overlay
-        row = Row(style=self._status_style, kind="notice", accent=cfg.accent,
+        colour = rendered.colour or cfg.accent
+        row = Row(style=self._status_style, kind="notice", accent=colour,
                   gap=self._metrics.height() * 0.24)
-        colour = cfg.success
         row.segments = [
             Segment(
-                glyph="leaf" if cfg.show_glyphs else None,
-                spans=[Span(text, color=colour, bold=True)],
+                glyph=rendered.glyph if cfg.show_glyphs else None,
+                spans=[Span(rendered.text, color=colour, bold=True)],
                 glyph_color=colour,
                 lead=0.0,
             )

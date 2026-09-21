@@ -65,7 +65,7 @@ class PickupNoticeTests(unittest.TestCase):
             {"event": "MaterialCollected", "Name": "sulphur",
              "Name_Localised": "Сера", "Count": 1}
         )
-        notices = state.drain_material_notices()
+        notices = state.drain_notices()
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0].text(), "+1 Сера (Редкость: 1)  Всего: 285")
 
@@ -80,7 +80,7 @@ class PickupNoticeTests(unittest.TestCase):
             {"event": "MaterialCollected", "Name": "shieldpatternanalysis",
              "Name_Localised": "Неполный анализ поглощения щита", "Count": 2}
         )
-        text = state.drain_material_notices()[0].text()
+        text = state.drain_notices()[0].text()
         self.assertIn("Неполный анализ поглощения щита", text)
         self.assertIn("Всего: 11", text)
 
@@ -96,7 +96,7 @@ class PickupNoticeTests(unittest.TestCase):
             {"event": "MaterialCollected", "Name": "sulphur",
              "Name_Localised": "Сера", "Count": 1}
         )
-        notice = state.drain_material_notices()[0]
+        notice = state.drain_notices()[0]
         self.assertIsNone(notice.total)
         self.assertEqual(notice.text(), "+1 Сера (Редкость: 1)")
 
@@ -105,8 +105,8 @@ class PickupNoticeTests(unittest.TestCase):
         state.apply({"event": "Materials", "Raw": []})
         state.apply({"event": "MaterialCollected", "Name": "iron",
                      "Name_Localised": "Железо", "Count": 1})
-        self.assertEqual(len(state.drain_material_notices()), 1)
-        self.assertEqual(state.drain_material_notices(), [])
+        self.assertEqual(len(state.drain_notices()), 1)
+        self.assertEqual(state.drain_notices(), [])
 
     def test_a_batch_carries_every_pickup(self) -> None:
         """A mining laser fires several a second; the app shows the last and
@@ -115,7 +115,7 @@ class PickupNoticeTests(unittest.TestCase):
         state.apply({"event": "Materials", "Raw": [{"Name": "iron", "Count": 10}]})
         for _ in range(3):
             state.apply({"event": "MaterialCollected", "Name": "iron", "Count": 1})
-        self.assertEqual(len(state.drain_material_notices()), 3)
+        self.assertEqual(len(state.drain_notices()), 3)
 
     def test_display_switches_are_the_overlay_s_decision(self) -> None:
         notice = MaterialNotice(symbol="sulphur", name="Сера", count=1, rarity=1, total=285)
@@ -169,7 +169,7 @@ class HoldingsTests(unittest.TestCase):
         state.apply({"event": "Materials", "Raw": [{"Name": "iron", "Count": 5}]})
         state.apply({"event": "MaterialCollected", "Name": "iron", "Count": 1})
         self.assertEqual(state.holdings, {})
-        self.assertEqual(state.drain_material_notices(), [])
+        self.assertEqual(state.drain_notices(), [])
 
     def test_collection_can_be_tracked_without_being_announced(self) -> None:
         config = Config()
@@ -178,7 +178,7 @@ class HoldingsTests(unittest.TestCase):
         state.apply({"event": "Materials", "Raw": [{"Name": "iron", "Count": 5}]})
         state.apply({"event": "MaterialCollected", "Name": "iron", "Count": 1})
         self.assertEqual(state.holdings["iron"], 6)
-        self.assertEqual(state.drain_material_notices(), [])
+        self.assertEqual(state.drain_notices(), [])
 
 
 class ConfigSectionTests(unittest.TestCase):
