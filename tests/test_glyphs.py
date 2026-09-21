@@ -181,6 +181,17 @@ class EverySegmentTests(unittest.TestCase):
             state.apply(event)
         return state
 
+    #: Text each block contributes with this fixture's state. Named as evidence
+    #: rather than as a claim of full coverage: what the four tests below must not
+    #: do is pass with nothing drawn, which "the bar is not empty" allowed -- the
+    #: placeholder for an empty journal satisfied it, and making every builder
+    #: return None left all four green.
+    #: The ship block is checked by its jump-range label rather than by a model
+    #: name: this fixture has no ShipyardSwap, so the name has not been learned
+    #: and the symbol is prettified instead.
+    TOP_ROW_EVIDENCE = ("Achenar", "баланс", "макс", "199/1232", "миссии")
+    BOTTOM_ROW_EVIDENCE = ("след. Sol", "V3G-N1H", "ОТКРЫТАЯ ИГРА", "Плохая репутация")
+
     def test_every_top_row_segment_renders(self) -> None:
         from elite_hud.overlay.hud import HudWindow
 
@@ -191,7 +202,11 @@ class EverySegmentTests(unittest.TestCase):
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
         self.assertGreater(len(hud._row_boxes), 0)
-        self.assertTrue(hud.bar_text().strip())
+        text = hud.bar_text()
+        for expected in self.TOP_ROW_EVIDENCE:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, text)
+        self.assertNotIn("ожидание журнала", text, "not the placeholder")
         hud.close()
 
     def test_every_bottom_row_segment_renders(self) -> None:
@@ -203,7 +218,10 @@ class EverySegmentTests(unittest.TestCase):
         hud = HudWindow(config, state)
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
-        self.assertTrue(hud.bar_text().strip())
+        text = hud.bar_text()
+        for expected in self.BOTTOM_ROW_EVIDENCE:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, text)
         hud.close()
 
     def test_every_segment_paints_without_raising(self) -> None:
@@ -222,6 +240,9 @@ class EverySegmentTests(unittest.TestCase):
         hud = HudWindow(config, state)
         hud._available_width = lambda: 4096.0  # type: ignore[method-assign]
         hud.rebuild()
+        for expected in self.TOP_ROW_EVIDENCE + self.BOTTOM_ROW_EVIDENCE:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, hud.bar_text(), "drawn, not merely not-failing")
         image = hud.grab().toImage()
         self.assertGreater(image.width(), 50)
         hud.close()
@@ -236,8 +257,10 @@ class EverySegmentTests(unittest.TestCase):
         hud._available_width = lambda: 2560.0  # type: ignore[method-assign]
         hud.rebuild()
         # The cargo segment is in the shipped defaults, and it was the one that
-        # was broken while no test drew it.
+        # was broken while no test drew it -- so the figure it draws is required
+        # here, not just a painted image.
         self.assertIn("cargo", config.overlay.segments)
+        self.assertIn("199/1232", hud.bar_text())
         image = hud.grab().toImage()
         self.assertGreater(image.width(), 50)
         hud.close()

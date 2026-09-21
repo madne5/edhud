@@ -85,7 +85,7 @@ def _qt_probe() -> str | None:
 QT_SKIP_REASON = _qt_probe()
 
 if QT_SKIP_REASON is None:
-    from PySide6.QtGui import QImage
+    from PySide6.QtGui import QColor, QImage
     from PySide6.QtWidgets import QApplication
 
 from elite_hud.config import Config
@@ -132,6 +132,23 @@ def pixel_counts(image: QImage) -> "Counter[tuple[int, int, int]]":
             if ((argb >> 24) & 0xFF) > 40:
                 counts[((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)] += 1
     return counts
+
+
+def pixels_near(image: QImage, colour: str, *, tolerance: int = 40) -> int:
+    """Pixels close to a colour, which is how drawn text is told from a plate."""
+    target = QColor(colour)
+    wanted = (target.red(), target.green(), target.blue())
+    image = image.convertToFormat(QImage.Format.Format_ARGB32)
+    found = 0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            argb = image.pixel(x, y)
+            if ((argb >> 24) & 0xFF) <= 40:
+                continue
+            rgb = ((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF)
+            if all(abs(a - b) <= tolerance for a, b in zip(rgb, wanted)):
+                found += 1
+    return found
 
 
 def opaque_pixels(image: QImage) -> tuple[int, int]:
@@ -190,7 +207,14 @@ class HudRenderTests(unittest.TestCase):
         self.assertGreater(image.width(), 50)
         painted, distinct = opaque_pixels(image)
         self.assertGreater(painted, 500, "the HUD painted almost nothing")
-        self.assertGreater(distinct, 3, "expected text, glyph and plate colours")
+        # A translucent plate alone gives well over 500 opaque pixels, so that
+        # count says nothing about the text: paintEvent reduced to the plates kept
+        # it green. Text pixels are looked for by colour as well.
+        text_pixels = pixels_near(image, config.overlay.foreground, tolerance=40)
+        self.assertGreater(
+            text_pixels, 200, f"expected text drawn in {config.overlay.foreground}"
+        )
+        self.assertGreater(distinct, 60, "a flat plate cannot produce this many shades")
         hud.close()
 
     def test_the_carrier_countdown_appears_only_when_a_jump_is_pending(self) -> None:
@@ -239,7 +263,13 @@ class HudRenderTests(unittest.TestCase):
         narrow = self._hud(config, state, screen_width=400)
         narrow_text = narrow.bar_text()
         narrow.close()
-        self.assertLessEqual(len(narrow_text), len(wide_text) + 8)
+        # "not longer than the wide one plus eight" is satisfied by two identical
+        # bars, so a screen too narrow to hold the row at all went unnoticed.
+        self.assertLess(
+            len(narrow_text), len(wide_text) - 20,
+            f"the narrow screen must show less: {narrow_text!r} vs {wide_text!r}",
+        )
+        self.assertIn("Achenar", narrow_text, "and the first block survives")
 
     def test_unknown_segments_are_dropped(self) -> None:
         config = Config()
@@ -267,9 +297,15 @@ class HudRenderTests(unittest.TestCase):
         text = hud.bar_text()
         self.assertIn("+1 Сера (Редкость: 1)  Всего: 285", text)
         self.assertNotEqual(text, before)
+        notices = [row for row in hud._rows if row.kind == "notice"]
+        self.assertEqual(len(notices), 1, "one hit line, above the status row")
         self.assertEqual(
-            next(row.kind for row in hud._rows if row.kind == "notice"), "notice"
+            "".join(span.text for span in notices[0].segments[0].spans),
+            "+1 Сера (Редкость: 1)  Всего: 285",
         )
+        kinds = [row.kind for row in hud._rows]
+        self.assertEqual(kinds[-1], "notice", "below the status row")
+        self.assertIn("status", kinds[: kinds.index("notice")], "and after it")
         hud.close()
 
     def test_the_pickup_honours_the_config_switches(self) -> None:
@@ -311,6 +347,11 @@ class HudRenderTests(unittest.TestCase):
         from elite_hud.notices import DockingNotice
 
         config = Config()
+        # The shipped warning and accent are the same orange, so comparing with
+        # warning while it also equals accent proves nothing: the row-colour
+        # fallback satisfies it. Moved apart first, as the carrier tests do.
+        config.overlay.warning = "#ff00ff"
+        config.overlay.accent = "#00ffff"
         hud = self._hud(config, make_state(config))
         hud.push_notice(DockingNotice(station="Bainbridge Market", reason="Distance"))
         row = next(r for r in hud._rows if r.kind == "notice")
@@ -448,8 +489,23 @@ class RowAlignmentTests(unittest.TestCase):
         hud = self._hud(config, make_state(config))
         self.assertGreaterEqual(len(hud._row_boxes), 1)
         for row, _y, plate_width, _plate_height in hud._row_boxes:
-            expected = hud._measure(row) + row.style.padding_x * 2
-            self.assertAlmostEqual(plate_width, expected, places=6)
+            # Measured here from the segments and the fonts, not by calling
+            # _measure: that expression is the one the layout itself uses, so the
+            # test compared the layout with itself. Written out, it also checks
+            # that the glyph box is counted -- forgetting it made every plate
+            # narrower than its own text, and nothing noticed.
+            style = row.style
+            expected = style.padding_x * 2
+            for segment in row.segments:
+                expected += segment.lead
+                if segment.glyph is not None:
+                    expected += style.glyph_size + style.glyph_gap
+                for span in segment.spans:
+                    expected += style.metrics_for(span.bold).horizontalAdvance(span.text)
+            self.assertAlmostEqual(
+                plate_width, expected, places=6,
+                msg=f"plate {plate_width} against {expected} measured by hand",
+            )
         hud.close()
 
 
@@ -570,7 +626,14 @@ class CarrierSegmentTests(unittest.TestCase):
         hud.close()
 
     def test_a_restricted_carrier_has_an_orange_icon(self) -> None:
+        """warning and accent ship as the same orange, so they are set apart here.
+
+        With the defaults the assertion is satisfied by the row colour, which is
+        what a broken access mapping would fall back to.
+        """
         config = Config()
+        config.overlay.warning = "#ff00ff"
+        config.overlay.accent = "#00ffff"
         hud = self._hud(self._state(), config)
         self.assertEqual(
             self._segment_for(hud, "V3G-N1H").glyph_color, config.overlay.warning
