@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import Config
 from ..formatting import format_countdown, format_credits
+from ..edsm import SystemFacts, describe
 from ..notices import DockingNotice, NoticeStyle, Rendered
 from ..materials import MaterialNotice
 from ..state import GameState
@@ -155,6 +156,8 @@ class HudWindow(QWidget):
         self._row_boxes: list[tuple[Row, float, float, float]] = []
         self._last_size: tuple[int, int] = (0, 0)
         self._last_position: tuple[int, int] | None = None
+        #: What EDSM said about the system we are jumping to.
+        self._edsm: SystemFacts | None = None
         #: The notice being shown, and when it stops being shown.
         self._notice: MaterialNotice | DockingNotice | None = None
         self._notice_until: float = 0.0
@@ -278,15 +281,60 @@ class HudWindow(QWidget):
         primary.segments = self._compose()
         rows.append(primary)
 
-        notice = self._notice_row()
-        if notice is not None:
-            rows.append(notice)
-
         status = Row(style=self._status_style, kind="status", gap=self._metrics.height() * 0.28)
         status.segments = self._status_segments()
         if status.segments:
             rows.append(status)
+
+        edsm = self._edsm_row()
+        if edsm is not None:
+            rows.append(edsm)
+
+        notice = self._notice_row()
+        if notice is not None:
+            rows.append(notice)
         return rows
+
+    # -- the system being jumped to ----------------------------------------
+
+    def set_edsm_facts(self, facts: SystemFacts | None) -> None:
+        """Attach what EDSM said about the current target, or clear it."""
+        self._edsm = facts
+        self.rebuild()
+
+    def edsm_text(self) -> str:
+        """The EDSM line as plain text, or "" when there is nothing to say."""
+        return describe(self._edsm, self.config.overlay.labels, self.config.edsm)
+
+    def _edsm_row(self) -> Row | None:
+        """One line about the target system, while there is one to show.
+
+        Its own row rather than an addition to the jump-target segment: the row
+        below already carries the carriers, and growing it would push them off a
+        narrow screen -- the segment order is a priority order, so the carrier a
+        commander is delivering to would be the first thing to go.
+        """
+        text = self.edsm_text()
+        if not text:
+            return None
+        cfg = self.config.overlay
+        facts = self._edsm
+        # Green when the star can be scooped, amber when it cannot: the one
+        # answer here that changes what the commander does at the next jump.
+        colour = cfg.foreground
+        if facts is not None and facts.known and facts.scoopable is not None:
+            colour = cfg.success if facts.scoopable else cfg.warning
+        row = Row(style=self._status_style, kind="edsm",
+                  gap=self._metrics.height() * 0.24)
+        row.segments = [
+            Segment(
+                glyph="star" if cfg.show_glyphs else None,
+                spans=[Span(text, color=colour, elastic=True)],
+                glyph_color=colour,
+                lead=0.0,
+            )
+        ]
+        return row
 
     # -- transient notices -------------------------------------------------
 

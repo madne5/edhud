@@ -82,6 +82,20 @@ class LabelConfig:
     material_encoded: str = "Данные"
     #: plural noun for remaining jumps
     jumps: str = "прыжка"
+    #: EDSM line for the system being jumped to
+    edsm_discovered: str = "открыта"
+    edsm_fuel: str = "заправка"
+    edsm_yes: str = "да"
+    edsm_no: str = "нет"
+    edsm_traffic: str = "трафик"
+    edsm_traffic_none: str = "нет"
+    edsm_day: str = "сутки"
+    edsm_week: str = "неделя"
+    edsm_total: str = "всего"
+    #: Shown when EDSM has never heard of the system. Deliberately not "nobody
+    #: has been here": EDSM only holds what commanders uploaded, so an absence
+    #: there is not proof of anything.
+    edsm_unknown: str = "в EDSM нет данных — возможно, не посещалась"
 
 
 @dataclass
@@ -185,6 +199,30 @@ class CommanderConfig:
 
 
 @dataclass
+class EdsmConfig:
+    """What to look up about the system we are jumping to.
+
+    EDSM is a player-run database of what commanders chose to upload, and these
+    are the questions it can answer before the journal can: whether the system is
+    known at all, who first reported it, whether the primary star can be scooped
+    for fuel, and how much traffic it sees.
+    """
+
+    enabled: bool = True
+    #: Requests are background; this bounds one of them.
+    timeout_seconds: float = 15.0
+    #: Who discovered the system, and when.
+    show_discovery: bool = True
+    #: Day, week and total visits. EDSM has no month or year to show.
+    show_traffic: bool = True
+    #: Whether the primary star can be scooped, which decides a fuel stop.
+    show_fuel_star: bool = True
+    #: Re-check an unknown system after arriving in it, so "no data" is
+    #: confirmed or corrected rather than left standing.
+    verify_on_arrival: bool = True
+
+
+@dataclass
 class MaterialsConfig:
     """The engineering-material pickup line.
 
@@ -249,6 +287,7 @@ class Config:
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
     materials: MaterialsConfig = field(default_factory=MaterialsConfig)
+    edsm: EdsmConfig = field(default_factory=EdsmConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -291,6 +330,7 @@ class Config:
         _merge(config.carrier, cls._table(raw, "carrier"))
         _merge(config.commander, cls._table(raw, "commander"))
         _merge(config.materials, cls._table(raw, "materials"))
+        _merge(config.edsm, cls._table(raw, "edsm"))
         _merge(config.update, cls._table(raw, "update"))
         _merge(config.logging, cls._table(raw, "logging"))
 
@@ -348,6 +388,8 @@ class Config:
             30.0, max(0.5, float(self.materials.display_seconds))
         )
 
+        self.edsm.timeout_seconds = min(60.0, max(3.0, float(self.edsm.timeout_seconds)))
+
         self.overlay.monitor = str(self.overlay.monitor).strip()
 
     def to_toml(self) -> str:
@@ -362,6 +404,7 @@ class Config:
             ("carrier", self.carrier),
             ("commander", self.commander),
             ("materials", self.materials),
+            ("edsm", self.edsm),
             ("update", self.update),
             ("logging", self.logging),
         ):

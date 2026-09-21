@@ -29,6 +29,7 @@ from .config import (
     set_config_value,
     set_update_mode,
 )
+from .edsm import EdsmService, SystemFacts
 from .installation import SingleInstanceGuard
 from .journal.watcher import JournalWatcher
 from .paths import expand_user_path, find_journal_dir
@@ -276,6 +277,16 @@ class HudApp:
         self._app = None
         self.status_reader: StatusReader | None = None
 
+        self.edsm_events: queue.Queue[SystemFacts] = queue.Queue()
+        self.edsm = EdsmService(
+            enabled=config.edsm.enabled,
+            timeout=config.edsm.timeout_seconds,
+            on_event=self.edsm_events.put,
+        )
+        #: The system the EDSM line is currently about, so a new jump does not
+        #: leave the previous system's facts sitting under a new name.
+        self._edsm_subject = ""
+
         self.update_events: queue.Queue[UpdateEvent] = queue.Queue()
         self.updates = UpdateService(
             config.update,
@@ -323,10 +334,71 @@ class HudApp:
         # --print-state is a debugging aid, so it follows every change rather
         # than only the alerts it used to wait for.
         if changed:
+            self._follow_edsm()
             self._publish_notices()
             if self.options.print_state:
                 print(self.render_text_line())
         return changed
+
+    def _follow_edsm(self) -> None:
+        """Ask EDSM about the system being jumped to, and re-check on arrival.
+
+        The target is known before the jump -- that is what FSDTarget is for --
+        so this is the one system the journal has not described yet. Arriving
+        re-asks about the system we are now in: the whole point of an answer of
+        "no data in EDSM" is that it can be confirmed or corrected, and only
+        arriving can do that.
+        """
+        if not self.config.edsm.enabled:
+            return
+        target = self.state.jump_plan.target
+        if target and target != self._edsm_subject:
+            self._request_edsm(target)
+            return
+
+        arrived = self.state.system.name
+        if arrived and self.config.edsm.verify_on_arrival and arrived != self._edsm_subject:
+            known = self.edsm.cached(arrived)
+            if known is None or not known.known:
+                self._request_edsm(arrived, force=True)
+
+    def _request_edsm(self, name: str, *, force: bool = False) -> None:
+        """Look a system up, showing anything already known about it at once."""
+        if not self.config.edsm.enabled or not name:
+            return
+        self._edsm_subject = name
+        cached = self.edsm.cached(name)
+        if cached is not None:
+            self._show_edsm(cached)
+        elif self.hud is not None:
+            # Nothing yet for this system: an empty row beats the previous
+            # system's answer wearing the new name.
+            self.hud.set_edsm_facts(None)
+        self.edsm.request(name, force=force)
+
+    def _show_edsm(self, facts: SystemFacts) -> None:
+        log.info(
+            "target %s: %s",
+            facts.name,
+            "no data in EDSM" if not facts.known else (
+                f"discovered by {facts.discoverer or '?'} {facts.discovered_at}, "
+                f"scoopable={facts.scoopable}, traffic "
+                f"{facts.traffic_day}/{facts.traffic_week}/{facts.traffic_total}"
+            ),
+        )
+        if self.hud is not None:
+            self.hud.set_edsm_facts(facts)
+
+    def _drain_edsm(self) -> None:
+        while True:
+            try:
+                facts = self.edsm_events.get_nowait()
+            except queue.Empty:
+                return
+            # Only the subject on screen is shown: a reply for a system we have
+            # already jumped past must not overwrite the current one.
+            if facts.name == self._edsm_subject or facts.name == self.state.jump_plan.target:
+                self._show_edsm(facts)
 
     def _publish_notices(self) -> None:
         """Hand the state's queued notices to the overlay.
@@ -403,6 +475,7 @@ class HudApp:
         self._poll_status()
         self._drain()
         self._drain_updates()
+        self._drain_edsm()
         if self.hud is not None:
             self.hud.rebuild()
 
@@ -442,6 +515,7 @@ class HudApp:
     # -- lifecycle ---------------------------------------------------------
 
     def start_sources(self) -> None:
+        self.edsm.start()
         if self.options.replay is not None:
             self.replay = ReplaySource(
                 self.options.replay,
@@ -482,6 +556,7 @@ class HudApp:
 
     def shutdown(self) -> None:
         self.stop_sources()
+        self.edsm.stop()
         self.updates.stop()
         if self.hud is not None:
             self.hud.close()
