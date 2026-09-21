@@ -20,8 +20,11 @@ PERSONAL = {
     "Callsign": "V3G-N1H",
     "Name": "[KSS0] Yuri Gagarin",
     "FuelLevel": 500,
+    # 12857 is what the game states alongside these two figures (25000 - 7001 -
+    # 5142) in the journal of 2026-09-18; a zero here would have been a shape the
+    # game never sends, kept only because no assertion happened to read it.
     "SpaceUsage": {"TotalCapacity": 25000, "Crew": 0, "Cargo": 7001,
-                   "CargoSpaceReserved": 0, "ShipPacks": 0, "ModulePacks": 0,
+                   "CargoSpaceReserved": 12857, "ShipPacks": 0, "ModulePacks": 0,
                    "FreeSpace": 5142},
     "Finance": {"CarrierBalance": 1_557_898_804, "ReserveBalance": 0},
 }

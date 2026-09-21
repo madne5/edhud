@@ -18,11 +18,66 @@ def load_events(path: Path = FIXTURE) -> list[dict]:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def play(events: list[dict], state: GameState) -> list:
-    alerts = []
+def play(events: list[dict], state: GameState) -> None:
+    """Feed a whole session through the state machine, as the watcher would.
+
+    This used to collect what ``apply`` returned, from the days when it returned
+    alerts. It now returns nothing, so the collector was not merely unused --
+    calling it would have raised on the first event.
+    """
     for event in events:
-        alerts.extend(state.apply(event))
-    return alerts
+        state.apply(event)
+
+
+class RecordedSessionTests(unittest.TestCase):
+    """A whole session, event by event, through the state machine.
+
+    The fixture is **synthetic**: it was written to exercise the events the bar
+    reads, not copied from a journal, and its carrier identifier and SpaceUsage
+    are invented. So this proves the parts work together and says nothing about
+    whether the interpretation matches the game -- that job belongs to the tests
+    that check numbers against -journal/.
+    """
+
+    def test_a_session_ends_where_it_should(self) -> None:
+        events = load_events()
+        state = GameState()
+
+        # Up to the second jump: the first system, fully scanned by then. Checked
+        # here rather than at the end, because a jump deliberately clears the
+        # system's scan state -- and asserting it afterwards was my own error
+        # until this test said so.
+        fully_scanned = next(
+            i for i, event in enumerate(events) if event.get("event") == "FSSAllBodiesFound"
+        )
+        play(events[: fully_scanned + 1], state)
+        self.assertEqual(state.system.name, "Synuefe PK-V b48-0", "still in the first system")
+        self.assertTrue(state.system.fss_all_found)
+        self.assertEqual(state.system.body_count, 11)
+
+        play(events[fully_scanned + 1 :], state)
+        self.assertEqual(state.commander, "MadNe5")
+        self.assertTrue(state.odyssey)
+        self.assertEqual(state.system.name, "Synuefe GX-K c24-11", "the second jump")
+        self.assertEqual(state.system.body_count, 3)
+        self.assertEqual(state.system.non_body_count, 1)
+
+        self.assertEqual(state.carrier.callsign, "K7Q-BQL")
+        self.assertFalse(state.carrier.jump_scheduled, "the request was cancelled")
+        self.assertIsNone(state.carrier.seconds_until_jump())
+
+        self.assertEqual(state.last_event, "Shutdown")
+        self.assertEqual(state.events_seen, len(events))
+
+    def test_the_same_session_twice_gives_the_same_state(self) -> None:
+        """Replay must be deterministic: the HUD is fed history at every start."""
+        first, second = GameState(), GameState()
+        play(load_events(), first)
+        play(load_events(), second)
+        self.assertEqual(first.system.name, second.system.name)
+        self.assertEqual(first.system.body_count, second.system.body_count)
+        self.assertEqual(first.system.scanned_bodies, second.system.scanned_bodies)
+        self.assertEqual(first.credits, second.credits)
 
 
 class TimestampTests(unittest.TestCase):
@@ -167,11 +222,28 @@ class RobustnessTests(unittest.TestCase):
         self.assertEqual(self.state.last_event, "SomethingNew")
 
     def test_handler_exceptions_do_not_propagate(self) -> None:
-        # A malformed payload must never take the overlay down.
-        self.assertIsNone(
-            self.state.apply({"event": "SAASignalsFound", "BodyID": "not-an-int", "Signals": "x"})
-        )
-        self.assertIsNone(self.state.apply({"event": "FSDJump"}))
+        """A malformed payload must never take the overlay down.
+
+        The try/except in apply() is the only thing between a journal the game
+        wrote oddly and a dead process -- an exception in a Qt slot is fatal in
+        PySide6. This test used to feed SAASignalsFound, which has no handler at
+        all, and an empty FSDJump, which cannot raise: neither reached the except,
+        so removing it entirely left the test green.
+        """
+        # A real handler that really raises: Location casts SystemAddress to int.
+        with self.assertLogs("elite_hud.state", level="ERROR"):
+            self.assertIsNone(
+                self.state.apply({"event": "Location", "SystemAddress": "not-an-int"})
+            )
+
+        # And the invariant in general, not just for one event: patch a handler to
+        # explode and apply() must still swallow it.
+        def explode(event: dict) -> None:
+            raise RuntimeError("handler exploded")
+
+        self.state._on_FSDJump = explode  # type: ignore[method-assign]
+        with self.assertLogs("elite_hud.state", level="ERROR"):
+            self.assertIsNone(self.state.apply({"event": "FSDJump"}))
 
     def test_last_event_is_tracked(self) -> None:
         self.state.apply({"event": "Shutdown", "timestamp": "2026-03-14T21:00:00Z"})

@@ -13,7 +13,9 @@ the same job. Nothing is decided from a mission's name.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from elite_hud.config import Config
 from elite_hud.deliveries import DeliveryBook
@@ -218,12 +220,32 @@ class DeliverySegmentTests(unittest.TestCase):
         self.assertIn("deliveries", config.overlay.segments)
         self.assertNotIn("deliveries", config.overlay.status_segments)
 
-    def test_the_row_can_be_emptied_of_it(self) -> None:
-        """It is a segment like any other, so the tray can switch it off."""
-        config = Config()
-        config.overlay.segments = [s for s in config.overlay.segments if s != "deliveries"]
-        config.validate()
-        self.assertNotIn("deliveries", config.overlay.segments)
+    def test_the_row_can_be_emptied_of_it_by_config(self) -> None:
+        """The round trip the tray actually performs, not a tautology.
+
+        The old assertion was ``assertNotIn("deliveries", [s for s in segments if
+        s != "deliveries"])``, which is true for every possible list -- neutering
+        ``Config.validate`` left it green. This toggles the segment off, writes the
+        list to a config file the way the tray does, reads it back, and checks that
+        the segment is gone and the rest of the row survived.
+        """
+        from elite_hud.config import SEGMENT_NAMES, ensure_config_file, set_config_list, toggle_segment
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            ensure_config_file(path)
+            config = Config.load(path)
+            self.assertIn("deliveries", config.overlay.segments)
+
+            wanted = toggle_segment(
+                list(config.overlay.segments), list(SEGMENT_NAMES), "deliveries", False
+            )
+            self.assertTrue(set_config_list(path, "overlay", "segments", wanted))
+            reloaded = Config.load(path)
+
+        self.assertNotIn("deliveries", reloaded.overlay.segments)
+        self.assertIn("missions", reloaded.overlay.segments, "the rest of the row is intact")
+        self.assertEqual(reloaded.overlay.segments, wanted)
 
 
 if __name__ == "__main__":

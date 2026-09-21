@@ -155,10 +155,18 @@ class ShipAndCargoStateTests(unittest.TestCase):
         self.state.apply({"event": "Cargo", "Vessel": "SRV", "Count": 2})
         self.assertEqual(self.state.cargo_count, 199)
 
-    def test_a_missing_vessel_is_assumed_to_be_the_ship(self) -> None:
+    def test_a_cargo_event_without_a_vessel_is_ignored(self) -> None:
+        """No journal has one, so the shape is unknown rather than the ship's.
+
+        The default used to be "no Vessel means Ship", which would have counted an
+        SRV's hold as the ship's on any event shape we have not seen. The live
+        status file is the primary source for the count, so nothing is lost by
+        refusing to guess.
+        """
         self.loadout()
+        self.state.apply({"event": "Cargo", "Vessel": "Ship", "Count": 199})
         self.state.apply({"event": "Cargo", "Count": 12})
-        self.assertEqual(self.state.cargo_count, 12)
+        self.assertEqual(self.state.cargo_count, 199, "the unknown shape changed nothing")
 
     def test_the_live_status_file_supplies_the_count(self) -> None:
         self.loadout()
@@ -173,10 +181,31 @@ class ShipAndCargoStateTests(unittest.TestCase):
         )
         self.assertEqual(self.state.ship_model, "Type-11 Prospector")
 
-    def test_no_capacity_means_no_cargo_figure(self) -> None:
-        """A hold of unknown size must not be shown as 0/0."""
-        self.state.apply({"event": "FSDJump", "StarSystem": "Sol", "SystemAddress": 1})
-        self.assertEqual(self.state.cargo_capacity, 0)
+    def test_a_loadout_without_a_capacity_leaves_the_hold_unknown(self) -> None:
+        """A hold of unknown size must not be shown as 0/0.
+
+        This used to apply an FSDJump -- which touches no hold at all -- and then
+        assert the dataclass default, so deleting the capacity handling from
+        _on_Loadout left it green. Now a real Loadout is fed in without a
+        CargoCapacity, and the figure has to stay absent rather than become zero.
+        """
+        self.state.apply(
+            {"event": "Loadout", "Ship": "explorer_nx", "ShipIdent": "KSS-14",
+             "MaxJumpRange": 40.5, "UnladenMass": 1333.780029,
+             "FuelCapacity": {"Main": 128.0, "Reserve": 1.14},
+             "Modules": []}
+        )
+        self.assertEqual(self.state.cargo_capacity, 0, "no capacity in the event")
+        self.assertGreater(self.state.max_jump_range, 0, "but the rest was read")
+
+        # And the same Loadout with a capacity does set it, so the test above is
+        # about the missing field rather than about Loadout being ignored.
+        self.state.apply(
+            {"event": "Loadout", "Ship": "explorer_nx", "CargoCapacity": 76,
+             "MaxJumpRange": 83.73526,
+             "FuelCapacity": {"Main": 128.0, "Reserve": 1.14}, "Modules": []}
+        )
+        self.assertEqual(self.state.cargo_capacity, 76)
 
 
 if __name__ == "__main__":

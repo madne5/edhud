@@ -569,9 +569,15 @@ class GameState:
         )
 
     def _on_Cargo(self, event: dict) -> None:
-        # Only the ship's own hold counts; an SRV has its own.
-        vessel = str(event.get("Vessel") or "Ship")
+        # Only the ship's own hold counts; an SRV has its own. A missing Vessel is
+        # not assumed to mean the ship: every one of the 575 Cargo events in this
+        # project's journals states it (544 Ship, 31 SRV), so an event without it
+        # is a shape we have never seen, and counting it could put an SRV's hold
+        # on the bar as the ship's. The live status file supplies the count anyway.
+        vessel = str(event.get("Vessel") or "")
         if vessel != "Ship":
+            if not vessel:
+                log.debug("Cargo event without a Vessel; ignoring it")
             return
         count = event.get("Count")
         if isinstance(count, int) and not isinstance(count, bool):
