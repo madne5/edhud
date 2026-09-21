@@ -293,6 +293,7 @@ class HudApp:
             current_version=__version__,
             on_event=self.update_events.put,
             on_before_apply=self._release_instance_guard,
+            on_apply_failed=self._reacquire_instance_guard,
         )
         self._update_actions: dict[str, object] = {}
         self._monitor_group = None
@@ -762,6 +763,21 @@ class HudApp:
         if self.instance is not None:
             log.debug("releasing the instance guard so the installer can proceed")
             self.instance.release()
+
+    def _reacquire_instance_guard(self) -> None:
+        """Take the mutex back when the installer never ran.
+
+        Releasing it is a bet that Setup takes over. A dismissed UAC prompt is how
+        that bet is lost: the HUD keeps running, so it has to keep holding its
+        mutex -- otherwise a second instance starts beside it, and the next
+        installer cannot tell that this one is running.
+        """
+        if self.instance is None:
+            return
+        if self.instance.acquire():
+            log.info("update did not happen; the instance guard is held again")
+        else:  # pragma: no cover - would need a second instance to appear
+            log.warning("could not take the instance guard back after a failed update")
 
     def _check_updates_now(self) -> None:
         self.updates.check_async(interact=True)

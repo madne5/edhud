@@ -12,9 +12,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from elite_hud.config import UpdateConfig
-from elite_hud.installation import INSTALLED, PORTABLE, InstallInfo
+from elite_hud.installation import INSTALLED, PORTABLE, SOURCE, InstallInfo
 from elite_hud.update_service import UpdateService
-from elite_hud.updater import Asset, GitHubClient, Release, UpdateInfo, Version
+from elite_hud.updater import (
+    Asset,
+    GitHubClient,
+    GitHubError,
+    Release,
+    UpdateInfo,
+    Version,
+)
 
 def _assets(base: str, *, corrupt_digest: bool = False) -> list[dict]:
     """Release assets with absolute URLs, as the real API returns them.
@@ -294,6 +301,111 @@ class ApplyHookTests(ServiceTestCase):
                 time.sleep(0.05)
 
         self.assertEqual(calls, ["applied"])
+
+
+class ApplyFailureTests(ServiceTestCase):
+    """A guard released for an installer that never ran has to come back.
+
+    Releasing the single-instance mutex is a bet that Setup takes over. A
+    dismissed UAC prompt is how that bet is lost: the HUD keeps running, and if
+    it keeps running unguarded then a second instance can start beside it and the
+    next installer cannot tell that this one is running.
+    """
+
+    def _run_failing_apply(self, service) -> list[str]:
+        calls: list[str] = []
+        service.on_before_apply = lambda: calls.append("released")
+        service.on_apply_failed = lambda: calls.append("reacquired")
+
+        def failing_apply(update, path) -> None:
+            calls.append("applied")
+            raise GitHubError("UAC отклонён")
+
+        service.apply = failing_apply  # type: ignore[method-assign]
+        result = service.check_now()
+        assert result.update is not None
+        service.download_and_install(result.update)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and "reacquired" not in calls:
+            time.sleep(0.05)
+        return calls
+
+    def test_the_guard_is_taken_back_when_the_installer_did_not_run(self) -> None:
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="notify")
+            calls = self._run_failing_apply(service)
+        self.assertEqual(calls, ["released", "applied", "reacquired"])
+
+    def test_a_successful_apply_leaves_the_guard_released(self) -> None:
+        """The installer needs it gone; the process is about to exit anyway."""
+        calls: list[str] = []
+
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="notify")
+            service.on_before_apply = lambda: calls.append("released")
+            service.on_apply_failed = lambda: calls.append("reacquired")
+            service.apply = lambda update, path: calls.append("applied")  # type: ignore[method-assign]
+            result = service.check_now()
+            assert result.update is not None
+            service.download_and_install(result.update)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and "applied" not in calls:
+                time.sleep(0.05)
+            time.sleep(0.2)
+        self.assertEqual(calls, ["released", "applied"])
+
+    def test_a_failing_apply_failed_hook_does_not_escape(self) -> None:
+        def boom() -> None:
+            raise RuntimeError("hook exploded")
+
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self.make_service(base, Path(tmp), mode="notify")
+            service.on_apply_failed = boom
+
+            def failing_apply(update, path) -> None:
+                raise GitHubError("UAC отклонён")
+
+            service.apply = failing_apply  # type: ignore[method-assign]
+            result = service.check_now()
+            assert result.update is not None
+            service.download_and_install(result.update)
+            time.sleep(0.5)
+
+
+class SourceCheckoutTests(ServiceTestCase):
+    """A checkout must never download a release it cannot install."""
+
+    def _source_service(self, base: str, tmp: Path, **config_kwargs) -> UpdateService:
+        config = UpdateConfig(repo="madne5/edhud", **config_kwargs)
+        return UpdateService(
+            config,
+            current_version="0.2.0",
+            install=InstallInfo(SOURCE, tmp),
+            download_dir=tmp,
+            client_factory=lambda repo, token, timeout: GitHubClient(
+                repo, api_base=base, timeout=timeout
+            ),
+        )
+
+    def test_an_install_mode_checkout_only_reports_the_version(self) -> None:
+        events: list[tuple[str, str]] = []
+
+        with _Server() as base, TemporaryDirectory() as tmp:
+            service = self._source_service(base, Path(tmp), mode="install")
+            service.on_event = lambda event: events.append((event.kind, event.message))
+            service.check_async()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not events:
+                time.sleep(0.05)
+            time.sleep(0.5)
+            downloaded = list(Path(tmp).glob("*"))
+
+        kinds = [kind for kind, _ in events]
+        self.assertIn("available", kinds)
+        self.assertNotIn("applied", kinds, "a checkout cannot install anything")
+        self.assertNotIn("downloading", kinds, "and must not download to find out")
+        self.assertEqual([p.name for p in downloaded if p.suffix in (".zip", ".exe")], [])
+        self.assertEqual(SOURCE, service.install.mode)
 
 
 class TamperTests(ServiceTestCase):

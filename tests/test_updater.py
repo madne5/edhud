@@ -531,8 +531,49 @@ class InstallationTests(unittest.TestCase):
         from elite_hud.installation import detect_install
 
         info = detect_install()
-        self.assertIn(info.mode, ("installed", "portable"))
+        self.assertIn(info.mode, ("installed", "portable", "source"))
         self.assertIn(info.update_preference, ("installer", "portable"))
+
+    def test_a_run_from_a_checkout_is_not_a_portable_install(self) -> None:
+        """It used to be one, and the consequences were destructive.
+
+        ``sys.executable`` in a checkout is the virtual environment's python, so
+        an update unpacked a release over the interpreter, relaunched
+        ``python.exe`` and left neither the HUD nor the environment working.
+        """
+        import sys as _sys
+        from unittest import mock
+
+        from elite_hud.installation import SOURCE, detect_install
+
+        with mock.patch.object(_sys, "frozen", False, create=True):
+            info = detect_install()
+        self.assertEqual(info.mode, SOURCE)
+        self.assertFalse(info.can_self_update)
+
+    def test_a_frozen_build_may_update_itself(self) -> None:
+        import sys as _sys
+        from unittest import mock
+
+        from elite_hud.installation import detect_install
+
+        with mock.patch.object(_sys, "frozen", True, create=True):
+            info = detect_install()
+        self.assertNotEqual(info.mode, "source")
+        self.assertTrue(info.can_self_update)
+
+    def test_a_portable_swap_refuses_to_run_from_a_checkout(self) -> None:
+        """The guard is in the function that does the damage, not only in
+        detection: detection can be bypassed by passing an InstallInfo."""
+        import sys as _sys
+        from unittest import mock
+
+        from elite_hud.updater import GitHubError, apply_portable
+
+        with mock.patch.object(_sys, "frozen", False, create=True):
+            with self.assertRaises(GitHubError) as caught:
+                apply_portable(Path("/tmp/nonexistent-staging"))
+        self.assertIn("исходников", str(caught.exception))
 
     def test_portable_prefers_a_zip(self) -> None:
         from elite_hud.installation import PORTABLE, InstallInfo

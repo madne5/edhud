@@ -6,8 +6,13 @@ Two deployment shapes are supported:
   registry entry, updates arrive as a new ``setup.exe``, and the HUD lives in
   ``Program Files`` or ``%LOCALAPPDATA%`` depending on the chosen scope.
 * **portable** -- an unpacked zip. Updates arrive as another zip.
+* **source** -- running from a checkout, where ``sys.executable`` is a Python
+  interpreter rather than the HUD. Nothing can be updated in place: a release
+  unpacked over a virtual environment's ``python`` would replace the interpreter
+  and take the environment with it.
 
-The distinction decides which release asset the updater downloads.
+The distinction decides which release asset the updater downloads, and whether
+it may install anything at all.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ APP_ID = "{8F2C4A91-3D7E-4B62-9A15-C6E0B84D5F37}"
 
 INSTALLED = "installed"
 PORTABLE = "portable"
+SOURCE = "source"
 
 
 @dataclass(frozen=True)
@@ -45,9 +51,23 @@ class InstallInfo:
         return self.mode == INSTALLED
 
     @property
+    def is_source(self) -> bool:
+        return self.mode == SOURCE
+
+    @property
     def update_preference(self) -> str:
         """Which release asset this copy should download."""
         return "installer" if self.is_installed else "portable"
+
+    @property
+    def can_self_update(self) -> bool:
+        """Whether an update can be installed in place at all.
+
+        A source checkout cannot: there is no application directory to replace.
+        Knowing this before downloading is the difference between a clear message
+        and a wrecked virtual environment.
+        """
+        return not self.is_source
 
 
 def _registry_locations() -> list[tuple[int, str]]:
@@ -83,6 +103,13 @@ def _registry_locations() -> list[tuple[int, str]]:
 
 def detect_install() -> InstallInfo:
     """Best-effort description of how this copy is deployed."""
+    if not getattr(sys, "frozen", False):
+        # Running from a checkout. ``sys.executable`` here is the virtual
+        # environment's python, so treating this as a portable install -- which
+        # is what happened -- meant an update would unpack a release over the
+        # interpreter, relaunch "python.exe", and leave neither working.
+        return InstallInfo(SOURCE, Path(__file__).resolve().parent.parent)
+
     if sys.platform != "win32":
         return InstallInfo(PORTABLE, Path(sys.executable).resolve().parent)
 

@@ -66,6 +66,7 @@ class UpdateService:
         download_dir: Path | None = None,
         client_factory=None,
         on_before_apply=None,
+        on_apply_failed=None,
     ) -> None:
         self.config = config
         self.current_version = current_version
@@ -76,6 +77,9 @@ class UpdateService:
         self._client_factory = client_factory
         #: called right before the installer runs, while we still hold locks
         self.on_before_apply = on_before_apply
+        #: called when the installer did not run after all, so the caller can
+        #: take its locks back
+        self.on_apply_failed = on_apply_failed
 
         self.available: UpdateInfo | None = None
         self.last_check: float = 0.0
@@ -198,6 +202,25 @@ class UpdateService:
                 )
             )
             if self.config.mode in AUTO_DOWNLOAD_MODES:
+                if not self.install.can_self_update:
+                    # Running from a checkout: downloading and unpacking a
+                    # release would replace the interpreter this process is
+                    # running on. Report the version and stop there -- the mode
+                    # asked to install, but nothing here can be installed.
+                    log.info(
+                        "update %s available, but this copy cannot install it (%s)",
+                        self.available.version,
+                        self.install.mode,
+                    )
+                    self._emit(
+                        UpdateEvent(
+                            "available",
+                            f"доступна версия {self.available.version}; "
+                            "запущено из исходников — обновление вручную",
+                            self.available,
+                        )
+                    )
+                    return
                 pending = self.available
                 install_now = self.config.mode == "install"
 
@@ -291,11 +314,13 @@ class UpdateService:
                 self.apply(update, path)
             except GitHubError as exc:
                 self.last_error = str(exc)
+                self._after_apply_failed()
                 self._emit(UpdateEvent("error", str(exc)))
                 return
             except Exception as exc:  # pragma: no cover - defensive
                 log.exception("applying the update crashed")
                 self.last_error = str(exc)
+                self._after_apply_failed()
                 self._emit(UpdateEvent("error", f"не удалось установить обновление: {exc}"))
                 return
             self._emit(UpdateEvent("applied", "обновление установлено, перезапуск…", update))
@@ -367,6 +392,7 @@ class UpdateService:
             self.apply(install_update, path)
         except Exception as exc:
             log.exception("staged update failed")
+            self._after_apply_failed()
             self._emit(UpdateEvent("error", f"не удалось установить обновление: {exc}"))
             return False
         self.clear_pending()
@@ -403,6 +429,22 @@ class UpdateService:
             self.on_before_apply()
         except Exception:  # pragma: no cover - defensive
             log.debug("before-apply hook failed", exc_info=True)
+
+    def _after_apply_failed(self) -> None:
+        """Tell the UI the installer never ran.
+
+        The guard was released on the assumption that Setup would take over. When
+        it does not -- a dismissed UAC prompt is the usual way -- the HUD carries
+        on running, and it has to carry on holding its mutex: otherwise a second
+        instance starts alongside it, and the next installer does not see the one
+        that is actually running and may replace files underneath it.
+        """
+        if self.on_apply_failed is None:
+            return
+        try:
+            self.on_apply_failed()
+        except Exception:  # pragma: no cover - defensive
+            log.debug("apply-failed hook failed", exc_info=True)
 
     def prune_downloads(self, keep: int = 2) -> int:
         """Delete old packages so the cache directory cannot grow forever."""

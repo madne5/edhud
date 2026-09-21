@@ -713,6 +713,15 @@ def stage_portable(archive: Path, staging: Path) -> Path:
 
 def apply_portable(root: Path, marker_name: str = UPDATE_MARKER) -> None:
     """Swap a portable install in place once this process exits."""
+    if not getattr(sys, "frozen", False):
+        # Nothing to swap: sys.executable is the interpreter this checkout runs
+        # on, and replacing it would take the virtual environment with it. The
+        # guard belongs here as well as in detect_install, because this function
+        # is what does the damage.
+        raise GitHubError(
+            "обновление на месте недоступно при запуске из исходников: "
+            "sys.executable — это интерпретатор, а не HUD"
+        )
     if sys.platform != "win32":
         raise GitHubError("установка обновления поддерживается только в Windows")
 
