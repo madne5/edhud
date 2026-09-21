@@ -22,6 +22,34 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
+def _hidden_platform_plugins() -> list[Path]:
+    """Qt platform plugins that exist but are invisible to Qt's own scan.
+
+    On macOS a file carrying the BSD flag ``UF_HIDDEN`` counts as hidden, and Qt
+    enumerates its plugin directory with ``QDir::Files``, which skips hidden
+    entries. A wheel that unpacks with that flag set therefore produces a Qt that
+    reports "no platform plugin" while every file is present, `ls`-visible and
+    loadable -- and, worse, a test suite that silently skips every Qt test
+    instead of saying so. This turns that silence into a sentence.
+    """
+    try:
+        import PySide6
+    except ImportError:  # pragma: no cover - the probe would have failed first
+        return []
+    platforms = Path(PySide6.__file__).resolve().parent / "Qt" / "plugins" / "platforms"
+    if not platforms.is_dir():
+        return []
+    hidden: list[Path] = []
+    for plugin in sorted(platforms.iterdir()):
+        try:
+            flags = os.lstat(plugin).st_flags  # macOS only
+        except (OSError, AttributeError):  # pragma: no cover - other platforms
+            return []
+        if flags & 0x8000:  # UF_HIDDEN
+            hidden.append(plugin)
+    return hidden
+
+
 def _qt_probe() -> str | None:
     probe = (
         "import os;"
@@ -41,6 +69,15 @@ def _qt_probe() -> str | None:
         return f"could not run the Qt probe: {exc}"
     if result.returncode == 0:
         return None
+
+    hidden = _hidden_platform_plugins()
+    if hidden:
+        return (
+            f"Qt cannot start: {len(hidden)} platform plugin(s) are present but "
+            f"marked hidden ({hidden[0].name} ...), and Qt's plugin scan skips "
+            "hidden files. Run tools/fix_macos_qt.py to clear the macOS "
+            "UF_HIDDEN flag, then run the tests again"
+        )
     lines = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()
     return f"Qt cannot start here: {lines[-1] if lines else result.returncode}"
 
