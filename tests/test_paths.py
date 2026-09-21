@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+from elite_hud import paths
 
 from elite_hud.paths import ED_SUBPATH, candidate_journal_dirs, find_journal_dir, looks_like_journal_dir
 
@@ -33,10 +37,25 @@ class FindJournalDirTests(unittest.TestCase):
             self.assertEqual(find_journal_dir(tmp), Path(tmp))
 
     def test_explicit_path_is_expanded(self) -> None:
+        """A path with ``~`` or an environment variable in it is resolved.
+
+        The fixture used to be a plain temporary path with neither, so removing
+        the expansion from ``find_journal_dir`` entirely left it green.
+        """
+        home = Path.home()
+        self.assertEqual(find_journal_dir("~"), home, "~ is expanded")
+        self.assertEqual(find_journal_dir("$HOME"), home, "an environment variable is expanded")
         with tempfile.TemporaryDirectory() as tmp:
-            nested = Path(tmp) / "a" / "b"
-            nested.mkdir(parents=True)
-            self.assertEqual(find_journal_dir(str(nested)), nested)
+            parent = Path(tmp)
+            (parent / "journals").mkdir()
+            os.environ["ELITE_HUD_TEST_DIR"] = str(parent)
+            try:
+                self.assertEqual(find_journal_dir("$ELITE_HUD_TEST_DIR/journals"),
+                                 parent / "journals")
+                self.assertEqual(find_journal_dir(str(parent / "journals")),
+                                 parent / "journals", "and a plain path still works")
+            finally:
+                os.environ.pop("ELITE_HUD_TEST_DIR", None)
 
     def test_unusable_explicit_path_returns_none(self) -> None:
         self.assertIsNone(find_journal_dir("/nonexistent/definitely/not/here"))
@@ -70,10 +89,26 @@ class CandidateTests(unittest.TestCase):
         candidates = candidate_journal_dirs()
         self.assertEqual(len(candidates), len({str(p) for p in candidates}))
 
-    def test_candidates_end_with_the_frontier_subpath_on_windows_layouts(self) -> None:
-        for path in candidate_journal_dirs():
-            if "Saved Games" in str(path):
-                self.assertTrue(str(path).endswith(str(ED_SUBPATH)))
+    def test_the_windows_layouts_produce_the_paths_the_game_uses(self) -> None:
+        """The Windows candidates, built here rather than on Windows.
+
+        The old version looped over the platform's own candidate list and checked
+        that each "Saved Games" entry ended with the constant that had been used to
+        build it -- a comparison with itself, which on this machine ran zero times
+        because none of the candidates match on macOS.
+        """
+        # Only the environment is faked; faking the platform as well would send the
+        # code down a path that builds WindowsPath, which cannot exist here.
+        with mock.patch.dict(os.environ, {"USERPROFILE": "/tmp/Profile"}, clear=False):
+            os.environ.pop("OneDrive", None)
+            os.environ.pop("OneDriveConsumer", None)
+            candidates = [str(p) for p in paths._windows_candidates()]
+
+        self.assertIn(f"/tmp/Profile/Saved Games/{ED_SUBPATH}", candidates)
+        self.assertIn(f"/tmp/Profile/OneDrive/Saved Games/{ED_SUBPATH}", candidates,
+                      "the OneDrive layout is one of the ones the game uses")
+        self.assertIn(f"/tmp/Profile/Documents/Saved Games/{ED_SUBPATH}", candidates)
+        self.assertTrue(all(c.endswith(str(ED_SUBPATH)) for c in candidates))
 
 
 if __name__ == "__main__":

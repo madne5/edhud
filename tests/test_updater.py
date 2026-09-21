@@ -436,16 +436,50 @@ class DownloaderTests(LocalServerTestCase):
         return UpdateInfo(release=release("v0.3.0"), asset=asset, checksum_asset=checksum)
 
     def test_verifies_using_the_api_digest(self) -> None:
+        """The digest from the API is used, and a wrong one stops the download.
+
+        The fixture advertised the payload's own digest and then asserted the bytes
+        arrived, which is true whether or not anything was verified: dropping the
+        ``sha256:`` branch of ``expected_digest`` passed every updater test. So the
+        advertised digest is now deliberately wrong for the second half.
+        """
         with TemporaryDirectory() as tmp:
             downloader = UpdateDownloader(self.client(), Path(tmp))
             path = downloader.fetch(self._update(digest_in_api=True, sums_url=""))
             self.assertEqual(path.read_bytes(), self.payload)
 
+        lying = self._update(digest_in_api=True, sums_url="")
+        lying = type(lying)(
+            release=lying.release,
+            asset=Asset("elite-hud-setup-0.3.0.exe", self.base + "/setup", 100,
+                        "sha256:" + "0" * 64),
+            checksum_asset=None,
+        )
+        with TemporaryDirectory() as tmp:
+            downloader = UpdateDownloader(self.client(), Path(tmp))
+            with self.assertRaises(GitHubError) as caught:
+                downloader.fetch(lying)
+            self.assertIn("контрольная сумма", str(caught.exception))
+            self.assertEqual(list(Path(tmp).iterdir()), [], "nothing usable is left behind")
+
     def test_verifies_using_the_checksum_manifest(self) -> None:
+        """The manifest is consulted, not merely present.
+
+        ``assertTrue(path.is_file())`` holds after any successful download, so
+        making ``expected_digest`` ignore the manifest entirely left this green.
+        The manifest is served with a wrong digest for the second half.
+        """
         with TemporaryDirectory() as tmp:
             downloader = UpdateDownloader(self.client(), Path(tmp))
             path = downloader.fetch(self._update(digest_in_api=False))
             self.assertTrue(path.is_file())
+
+        self.routes["/bad-manifest.txt"] = b"1" * 64 + b"  elite-hud-setup-0.3.0.exe\n"
+        with TemporaryDirectory() as tmp:
+            downloader = UpdateDownloader(self.client(), Path(tmp))
+            with self.assertRaises(GitHubError):
+                downloader.fetch(self._update(digest_in_api=False, sums_url="/bad-manifest.txt"))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_rejects_a_mismatched_checksum(self) -> None:
         self.routes["/bad-sums.txt"] = b"0" * 64 + b"  elite-hud-setup-0.3.0.exe\n"

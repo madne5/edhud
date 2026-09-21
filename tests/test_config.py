@@ -54,12 +54,31 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(parsed["overlay"]["labels"]["missions"], "миссии")
 
     def test_generated_toml_loads_back_to_the_same_values(self) -> None:
+        """Values that differ from the defaults, or the check proves nothing.
+
+        Comparing with the dataclass defaults -- "Consolas", "ФК" -- is satisfied
+        by a ``Config.load`` that ignores the file and returns ``cls()``, which is
+        the one thing this test exists to rule out.
+        """
+        written = Config()
+        written.overlay.font_family = "Courier New"
+        written.overlay.font_size = 19
+        written.overlay.position = "bottom-right"
+        written.overlay.labels.carrier = "НОСИТЕЛЬ"
+        written.journal.poll_interval = 2.5
+        written.carrier.spool_minutes = 12.0
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
-            path.write_text(Config().to_toml(), encoding="utf-8")
+            path.write_text(written.to_toml(), encoding="utf-8")
             loaded = Config.load(path)
-        self.assertEqual(loaded.overlay.font_family, "Consolas")
-        self.assertEqual(loaded.overlay.labels.carrier, "ФК")
+        self.assertEqual(loaded.overlay.font_family, "Courier New")
+        self.assertEqual(loaded.overlay.font_size, 19)
+        self.assertEqual(loaded.overlay.position, "bottom-right")
+        self.assertEqual(loaded.journal.poll_interval, 2.5)
+        self.assertEqual(loaded.carrier.spool_minutes, 12.0)
+        # A label is read from the file as well -- this is the table that the
+        # language machinery deliberately leaves to the commander.
+        self.assertEqual(loaded.overlay.labels.carrier, "НОСИТЕЛЬ")
 
 
 class LoadingTests(unittest.TestCase):
@@ -198,10 +217,23 @@ class ConfigLocationTests(unittest.TestCase):
         self.assertEqual(resolve_config_path(explicit), explicit)
 
     def test_source_checkout_uses_the_repository_root(self) -> None:
+        """Anchored to the source file, not to wherever the program was started.
+
+        The expectation used to be the same expression the implementation uses,
+        evaluated with the working directory already inside the repository, so
+        ``Path.cwd() / "config.toml"`` would have passed it. The working directory
+        is moved somewhere else for the assertion.
+        """
         if hasattr(sys, "frozen"):
             del sys.frozen  # type: ignore[attr-defined]
         expected = Path(__file__).resolve().parent.parent / "config.toml"
-        self.assertEqual(resolve_config_path(None), expected)
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                self.assertEqual(resolve_config_path(None), expected)
+            finally:
+                os.chdir(cwd)
 
 
 @unittest.skipIf(sys.platform == "win32", "POSIX permission bits only")
@@ -482,12 +514,42 @@ class MissingSectionTests(unittest.TestCase):
         self.assertEqual(add_missing_sections(Path("/nonexistent/config.toml")), [])
 
     def test_deleted_keys_inside_an_existing_section_are_not_restored(self) -> None:
-        """The file promises that deleting a line falls back to the default."""
+        """The file promises that deleting a line falls back to the default.
+
+        Checked against a key that really exists in ``[overlay]``. This used to
+        assert the absence of ``superpower_progress``, a name that is in no
+        dataclass and in no generated config at all -- so it was true however the
+        function behaved.
+        """
         path = self._file("[overlay]\nfont_size = 15\n")
         add_missing_sections(path)
         text = path.read_text(encoding="utf-8")
-        self.assertNotIn("superpower_progress", text)
+        for key in ("position", "show_glyphs", "font_family", "segments"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, text, "a deleted key must stay deleted")
+        # Missing *sections* are appended, which is the function's job; what must
+        # not happen is a key being re-added inside a section that already exists.
+        self.assertTrue(
+            text.startswith("[overlay]\nfont_size = 15\n"),
+            "the existing section was left exactly as it was",
+        )
         self.assertEqual(Config.load(path).overlay.font_size, 15)
+
+    def test_a_dotted_declaration_is_extended_with_a_dotted_key(self) -> None:
+        """A bare key inserted into a dotted declaration lands at the top level.
+
+        The fixture used to declare ``faction.match`` while the key being set
+        belonged to ``journal``, so the "dotted" branch was never reached for the
+        section being edited and deleting that branch changed nothing.
+        """
+        path = self._file("journal.poll_interval = 1.0\n")
+        set_config_value(path, "journal", "path", "X")
+        text = path.read_text(encoding="utf-8")
+        self.assertNotIn("[journal]", text, "still declared the dotted way")
+        self.assertIn('journal.path = "X"', text, "and the new key follows that form")
+        loaded = Config.load(path)
+        self.assertEqual(loaded.journal.path, "X")
+        self.assertEqual(loaded.journal.poll_interval, 1.0, "the dotted key survives")
 
     def test_the_result_still_loads(self) -> None:
         path = self._file("[overlay]\nsegments = [\"system\"]\n")
@@ -555,28 +617,35 @@ class SectionPlacementTests(unittest.TestCase):
         self.assertEqual(reloaded.carrier.spool_minutes, 5.0)
 
     def test_a_deleted_key_is_restored_into_its_section(self) -> None:
-        """The file promises deleting a line falls back to the default."""
+        """A key the file no longer has is written back into the right table.
+
+        The fixture used to delete ``name = ""``, which appears nowhere in a
+        generated config, so nothing was deleted and the test was a duplicate of
+        the one above it.
+        """
         path = Path(tempfile.mkdtemp()) / "config.toml"
         ensure_config_file(path)
-        text = path.read_text(encoding="utf-8").replace('name = ""\n', "", 1)
-        path.write_text(text, encoding="utf-8")
+        original = path.read_text(encoding="utf-8")
+        deleted = "poll_interval = 0.75"
+        self.assertIn(deleted, original, "the fixture must delete a real line")
+        path.write_text(original.replace(deleted, "", 1), encoding="utf-8")
+
         set_config_value(path, "journal", "path", "X")
-        self.assertEqual(Config.load(path).journal.path, "X")
+        text = path.read_text(encoding="utf-8")
+        reloaded = Config.load(path)
+        self.assertEqual(reloaded.journal.path, "X")
+        self.assertEqual(reloaded.journal.poll_interval, 0.75, "the deleted line stays gone")
+        # And the new key went into [journal], before the next section header.
+        self.assertLess(text.index("path = \"X\""), text.index("[carrier]"))
 
     def test_an_empty_section_gets_a_key_without_a_second_header(self) -> None:
         """A duplicate [table] makes the whole file unparseable in TOML."""
-        path = self._file("[faction]\n")
+        path = self._file("[journal]\n[carrier]\nspool_minutes = 12.0\n")
         set_config_value(path, "journal", "path", "X")
-        self.assertEqual(path.read_text(encoding="utf-8").count("[faction]"), 1)
+        text = path.read_text(encoding="utf-8")
+        self.assertEqual(text.count("[journal]"), 1, "no second header")
         self.assertEqual(Config.load(path).journal.path, "X")
-
-    def test_a_dotted_declaration_is_extended_with_a_dotted_key(self) -> None:
-        """A bare key inserted after `faction.match = ...` would land at the
-        top level, not in the table."""
-        path = self._file('faction.match = "contains"\n')
-        set_config_value(path, "journal", "path", "X")
-        self.assertNotIn("[faction]", path.read_text(encoding="utf-8"))
-        self.assertEqual(Config.load(path).journal.path, "X")
+        self.assertEqual(Config.load(path).carrier.spool_minutes, 12.0, "untouched")
 
     def test_a_missing_section_is_created(self) -> None:
         path = self._file('[journal]\npath = ""\n')

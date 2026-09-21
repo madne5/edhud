@@ -355,12 +355,25 @@ class ApplyFailureTests(ServiceTestCase):
         self.assertEqual(calls, ["released", "applied"])
 
     def test_a_failing_apply_failed_hook_does_not_escape(self) -> None:
+        """The hook runs, its failure is contained, and the error is reported.
+
+        This had no assertion at all, and the hook runs on a worker thread, so
+        nothing it did could fail the test -- removing the try/except around it and
+        letting it re-raise left the suite green. What is checked now is that the
+        hook was reached, that an error event was emitted anyway, and that the
+        worker survived to emit it.
+        """
+        calls: list[str] = []
+        events: list[tuple[str, str]] = []
+
         def boom() -> None:
+            calls.append("hooked")
             raise RuntimeError("hook exploded")
 
         with _Server() as base, TemporaryDirectory() as tmp:
             service = self.make_service(base, Path(tmp), mode="notify")
             service.on_apply_failed = boom
+            service.on_event = lambda event: events.append((event.kind, event.message))
 
             def failing_apply(update, path) -> None:
                 raise GitHubError("UAC отклонён")
@@ -369,7 +382,15 @@ class ApplyFailureTests(ServiceTestCase):
             result = service.check_now()
             assert result.update is not None
             service.download_and_install(result.update)
-            time.sleep(0.5)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not events:
+                time.sleep(0.05)
+            time.sleep(0.3)
+
+        self.assertEqual(calls, ["hooked"], "the hook ran despite exploding")
+        kinds = [kind for kind, _ in events]
+        self.assertIn("error", kinds, "the failure was reported to the user")
+        self.assertTrue(any("UAC" in message for _, message in events))
 
 
 class SourceCheckoutTests(ServiceTestCase):

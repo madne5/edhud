@@ -182,7 +182,11 @@ class HudAppEventTests(unittest.TestCase):
             app._on_journal_event(journal_line(event="FSDJump", StarSystem="Sol"))
             app._on_journal_event(journal_line(event="LoadGame", Credits=1))
             app._drain()
-        self.assertIn("Sol", buffer.getvalue())
+        printed = [line for line in buffer.getvalue().splitlines() if line.strip()]
+        # One line per batch, not one per event: asserting only that "Sol" appears
+        # is satisfied by printing on every event.
+        self.assertEqual(len(printed), 1, f"expected one line, got {printed}")
+        self.assertIn("Sol", printed[0])
 
 
 class HudAppPersistenceTests(unittest.TestCase):
