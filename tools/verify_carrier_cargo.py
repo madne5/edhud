@@ -57,20 +57,32 @@ def replay(path: Path) -> int:
             carrier_id = event.get("CarrierID")
             usage = event.get("SpaceUsage")
             stated = usage.get("Cargo") if isinstance(usage, dict) else None
+            reserved = usage.get("CargoSpaceReserved") if isinstance(usage, dict) else None
             if isinstance(carrier_id, int) and isinstance(stated, int):
                 previous = book.carriers.get(carrier_id)
                 if carrier_id in known and previous is not None:
-                    if previous.cargo == stated:
-                        print(f"  сверка     {stamp} {previous.label}: сошлось, {stated} т")
-                    else:
-                        disagreements += 1
-                        print(
-                            f"  РАСХОЖДЕНИЕ {stamp} {previous.label}: код насчитал "
-                            f"{previous.cargo}, игра говорит {stated} "
-                            f"(разница {stated - previous.cargo:+d})"
+                    problems = []
+                    if previous.cargo != stated:
+                        problems.append(
+                            f"груз: код {previous.cargo}, игра {stated} "
+                            f"({stated - previous.cargo:+d})"
                         )
+                    if isinstance(reserved, int) and (
+                        previous.cargo_space_reserved != reserved
+                    ):
+                        problems.append(
+                            f"бронь: код {previous.cargo_space_reserved}, "
+                            f"игра {reserved}"
+                        )
+                    if problems:
+                        disagreements += len(problems)
+                        print(f"  РАСХОЖДЕНИЕ {stamp} {previous.label}: " + "; ".join(problems))
+                    else:
+                        extra = f", бронь {reserved}" if reserved else ""
+                        print(f"  сверка     {stamp} {previous.label}: сошлось, {stated} т{extra}")
                 else:
-                    print(f"  {stamp} {event.get('Callsign')}: игра говорит {stated} т")
+                    extra = f", бронь {reserved}" if reserved else ""
+                    print(f"  {stamp} {event.get('Callsign')}: игра говорит {stated} т{extra}")
                 known.add(carrier_id)
             book.observe(event)
             continue

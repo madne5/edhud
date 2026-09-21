@@ -241,6 +241,20 @@ class CarrierCargoTrackingTests(unittest.TestCase):
                                                   FreeSpace=42727))
     STATS_5081 = dict(STATS_6089, SpaceUsage=dict(STATS_6089["SpaceUsage"], Cargo=5081,
                                                   FreeSpace=43959))
+    #: Real: V3G-N1H at 21:23:03 on 2026-09-20, with a buy order outstanding.
+    STATS_RESERVED_537 = dict(
+        STATS_6089,
+        Callsign="V3G-N1H",
+        SpaceUsage={"TotalCapacity": 25000, "Crew": 0, "Cargo": 19321,
+                    "CargoSpaceReserved": 537, "ShipPacks": 0, "ModulePacks": 0,
+                    "FreeSpace": 5142},
+    )
+    #: Real: the same carrier seven seconds after 537 t had been delivered.
+    STATS_19858_AFTER_DELIVERY = dict(
+        STATS_RESERVED_537,
+        SpaceUsage=dict(STATS_RESERVED_537["SpaceUsage"], Cargo=19858,
+                        CargoSpaceReserved=0),
+    )
 
     DOCKED_AT_KSS0 = {
         "event": "Docked", "StationName": "KSS0", "StationType": "FleetCarrier",
@@ -412,10 +426,11 @@ class CarrierCargoTrackingTests(unittest.TestCase):
     def test_a_trade_at_a_carrier_s_market_moves_its_hold(self) -> None:
         """Selling to a carrier puts goods in it; buying takes them out.
 
-        No market trade in these journals happened at a carrier -- every one was
-        at a station -- so this direction follows what the events mean. The part
-        that is measured is the identity: a carrier's MarketID is its CarrierID,
-        which no station can satisfy.
+        Confirmed on 2026-09-20: V3G-N1H reported 19321 t with 537 t reserved,
+        three sales of 112, 9 and 416 t followed, and the game's next
+        CarrierStats said 19858 t with 0 reserved. 112 + 9 + 416 = 537, and
+        19321 + 537 = 19858, so both the hold and the reservation moved by
+        exactly what the trades said.
         """
         book = self._book()
         self.assertTrue(book.observe({"event": "MarketSell", "MarketID": self.KSS0,
@@ -424,6 +439,76 @@ class CarrierCargoTrackingTests(unittest.TestCase):
         self.assertTrue(book.observe({"event": "MarketBuy", "MarketID": self.KSS0,
                                       "Type": "gold", "Count": 40}))
         self.assertEqual(book.info(self.KSS0).cargo, 6149)
+
+    def test_a_sale_at_a_carrier_spends_the_reservation(self) -> None:
+        """The row must show the buy order shrinking as the goods arrive.
+
+        This is the other half of the original complaint: a 20000 t purchase
+        contract looked like 20000 t already loaded. The reservation is what the
+        deliveries consume, and on 2026-09-20 it went 537 -> 0 over three sales
+        that totalled exactly 537 t.
+        """
+        book = CarrierBook()
+        book.observe(self.STATS_RESERVED_537)
+        self.assertEqual(book.info(self.KSS0).cargo_space_reserved, 537)
+
+        for count in (112, 9, 416):
+            book.observe({"event": "MarketSell", "MarketID": self.KSS0,
+                          "Type": "steel", "Count": count})
+        info = book.info(self.KSS0)
+        self.assertEqual(info.cargo_space_reserved, 0)
+        self.assertEqual(info.cargo, 19321 + 537)
+        self.assertEqual(info.reserved_note(), "", "nothing left to show")
+        # And the game agrees, seven seconds later in the journal.
+        book.observe(self.STATS_19858_AFTER_DELIVERY)
+        self.assertEqual(info.cargo, 19858)
+        self.assertEqual(info.cargo_space_reserved, 0)
+
+    def test_a_sale_never_overspends_the_reservation(self) -> None:
+        book = CarrierBook()
+        book.observe(self.STATS_RESERVED_537)
+        book.observe({"event": "MarketSell", "MarketID": self.KSS0,
+                      "Type": "steel", "Count": 5000})
+        self.assertEqual(book.info(self.KSS0).cargo_space_reserved, 0)
+
+    def test_a_purchase_from_a_carrier_leaves_the_reservation_alone(self) -> None:
+        """Sale orders hold stock that is already counted in the hold."""
+        book = CarrierBook()
+        book.observe(self.STATS_RESERVED_537)
+        book.observe({"event": "MarketBuy", "MarketID": self.KSS0,
+                      "Type": "steel", "Count": 100})
+        info = book.info(self.KSS0)
+        self.assertEqual(info.cargo, 19321 - 100)
+        self.assertEqual(info.cargo_space_reserved, 537)
+
+    def test_the_hold_is_never_adjusted_from_nothing(self) -> None:
+        """A delivery cannot invent a total for a carrier nobody has reported.
+
+        At the start of a session the book may know nothing about a carrier, and
+        adding a 1232 t delivery to that would present the amount delivered as
+        the whole hold.
+        """
+        book = CarrierBook()  # no CarrierStats at all
+        self.assertFalse(
+            book.observe({"event": "MarketSell", "MarketID": self.KSS0,
+                          "Type": "steel", "Count": 1232})
+        )
+        # Nothing to adjust, so nothing is remembered either: a carrier known
+        # only from a trade would be a nameless row the cache keeps forever.
+        self.assertIsNone(book.info(self.KSS0))
+        self.assertEqual(len(book), 0)
+
+    def test_the_hold_is_known_again_after_a_restart(self) -> None:
+        cache = Path(tempfile.mkdtemp()) / "carriers.json"
+        book = CarrierBook(cache_path=cache)
+        book.observe(self.STATS_6089)
+        reopened = CarrierBook(cache_path=cache)
+        self.assertTrue(reopened.info(self.KSS0).cargo_known)
+        self.assertTrue(
+            reopened.observe({"event": "MarketSell", "MarketID": self.KSS0,
+                              "Type": "steel", "Count": 11})
+        )
+        self.assertEqual(reopened.info(self.KSS0).cargo, 6100)
 
     def test_a_trade_at_a_station_is_ignored(self) -> None:
         """All four market trades in the journals were at stations."""

@@ -51,6 +51,14 @@ class CarrierInfo:
     cargo: int = 0
     total_capacity: int = 0
     free_space: int = 0
+    #: Whether ``cargo`` came from the game rather than from a default.
+    #:
+    #: Cargo moves between CarrierStats reports, so the book adjusts it from the
+    #: events that move it -- but only ever from a figure the game has stated.
+    #: Adding a delivery to a hold nobody has reported yet would invent a total
+    #: out of the amount delivered, which is exactly the kind of number this
+    #: project does not show.
+    cargo_known: bool = False
     #: Tonnes held back by outstanding buy orders. Counted in ``free_space``
     #: before anything has been delivered, which is why free space is not a
     #: measure of what is on board: a 20000 t order on a 25000 t carrier drops
@@ -166,6 +174,12 @@ class CarrierBook:
                 number = value.get(name)
                 if isinstance(number, int) and not isinstance(number, bool):
                     setattr(info, name, number)
+            # The hold is only adjusted from a figure the game stated, so which
+            # of the two it is has to survive a restart: a cached 0 from an
+            # empty carrier is known, a default 0 is not.
+            known = value.get("cargo_known")
+            if isinstance(known, bool):
+                info.cargo_known = known
             self.carriers[carrier_id] = info
         log.debug("loaded %d carrier(s) from %s", len(self.carriers), self.cache_path)
 
@@ -236,7 +250,10 @@ class CarrierBook:
                 info.docking_access = access.casefold()
             usage = event.get("SpaceUsage")
             if isinstance(usage, dict):
-                info.cargo = self._int_or(usage.get("Cargo"), info.cargo)
+                stated = usage.get("Cargo")
+                if isinstance(stated, int) and not isinstance(stated, bool):
+                    info.cargo = stated
+                    info.cargo_known = True
                 info.total_capacity = self._int_or(
                     usage.get("TotalCapacity"), info.total_capacity
                 )
@@ -361,28 +378,46 @@ class CarrierBook:
     def _observe_market_trade(self, name: str, event: dict) -> bool:
         """Apply a trade at a carrier's own market.
 
-        Selling to a carrier puts the goods in its hold; buying from it takes
-        them out. Every market trade in these journals happened at a station, so
-        this direction is read from what the events mean rather than measured --
-        the identity that makes it safe is not: MarketID matches a known
-        CarrierID, which no station can satisfy.
+        Selling to a carrier puts the goods in its hold and spends part of the
+        space its buy orders had reserved; buying from it takes goods out. Both
+        directions are confirmed against the journals: on 2026-09-20 V3G-N1H
+        reported 19321 t with 537 t reserved, three sales of 112, 9 and 416 t
+        followed -- 537 in total -- and the game's next CarrierStats said 19858 t
+        with 0 reserved. The 537 is the reservation being consumed, exactly.
+
+        A sale at a carrier can only fill a buy order, because a carrier's market
+        lists nothing else, so the reservation falls by the same amount.
         """
         market = event.get("MarketID")
         if not isinstance(market, int) or isinstance(market, bool):
             return False
-        if market not in self.carriers:
+        info = self.carriers.get(market)
+        if info is None:
             return False
         count = event.get("Count")
         if not isinstance(count, int) or isinstance(count, bool):
             return False
-        return self._apply_cargo_delta(
-            market, count if name == "MarketSell" else -count, name
-        )
 
-    def _apply_cargo_delta(self, carrier_id: int, delta: int, source: str) -> bool:
+        if name == "MarketSell":
+            # Spending the reservation is separate from moving the hold, so a
+            # sale that cannot move the hold (because it is not known yet) still
+            # gets to spend it.
+            spent = 0
+            if info.cargo_space_reserved:
+                spent = min(info.cargo_space_reserved, count)
+                info.cargo_space_reserved -= spent
+            moved = self._apply_cargo_delta(market, count, name, save=False)
+            if spent or moved:
+                self._save()
+            return bool(spent or moved)
+        return self._apply_cargo_delta(market, -count, name)
+
+    def _apply_cargo_delta(
+        self, carrier_id: int, delta: int, source: str, *, save: bool = True
+    ) -> bool:
         """Move the known hold, never below zero, and say so in the log."""
         info = self.carriers.get(carrier_id)
-        if info is None or not delta:
+        if info is None or not delta or not info.cargo_known:
             return False
         updated = max(0, info.cargo + delta)
         if updated == info.cargo:
@@ -395,7 +430,8 @@ class CarrierBook:
             source,
         )
         info.cargo = updated
-        self._save()
+        if save:
+            self._save()
         return True
 
     # -- display -----------------------------------------------------------
