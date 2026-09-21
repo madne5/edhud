@@ -74,7 +74,9 @@ class LabelConfig:
     #: units for the cartography counts
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."
-    #: material pickup notification: "+1 Сера (Редкость: 1)  Всего: 285"
+    #: material pickup line: "+1 Сера (Редкость: 1)  Всего: 285"
+    rarity: str = "Редкость"
+    total: str = "Всего"
     #: plural noun for remaining jumps
     jumps: str = "прыжка"
 
@@ -179,6 +181,28 @@ class CommanderConfig:
 
 
 @dataclass
+class MaterialsConfig:
+    """The engineering-material pickup line.
+
+    One line of text, shown for a few seconds when something is collected:
+    "+1 Сера (Редкость: 1)  Всего: 285". Rarity is the only part the journal
+    never states, so it can be switched off here for anyone who would rather
+    not rely on the bundled table.
+    """
+
+    #: Track holdings and show pickups at all.
+    enabled: bool = True
+    #: Show the pickup line as materials are collected.
+    notify_collected: bool = True
+    #: Append "(Редкость: N)".
+    rarity: bool = True
+    #: Append "Всего: N" once a Materials event has reported the whole hold.
+    show_total: bool = True
+    #: How long the line stays on screen.
+    display_seconds: float = 4.0
+
+
+@dataclass
 class UpdateConfig:
     """Self-update from GitHub Releases."""
 
@@ -215,6 +239,7 @@ class Config:
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     carrier: CarrierConfig = field(default_factory=CarrierConfig)
     commander: CommanderConfig = field(default_factory=CommanderConfig)
+    materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -256,6 +281,7 @@ class Config:
         _merge(config.overlay.labels, cls._table(overlay, "labels"))
         _merge(config.carrier, cls._table(raw, "carrier"))
         _merge(config.commander, cls._table(raw, "commander"))
+        _merge(config.materials, cls._table(raw, "materials"))
         _merge(config.update, cls._table(raw, "update"))
         _merge(config.logging, cls._table(raw, "logging"))
 
@@ -309,6 +335,10 @@ class Config:
 
         self.commander.mission_capacity = max(1, int(self.commander.mission_capacity))
 
+        self.materials.display_seconds = min(
+            30.0, max(0.5, float(self.materials.display_seconds))
+        )
+
         self.overlay.monitor = str(self.overlay.monitor).strip()
 
     def to_toml(self) -> str:
@@ -322,6 +352,7 @@ class Config:
             ("overlay", self.overlay),
             ("carrier", self.carrier),
             ("commander", self.commander),
+            ("materials", self.materials),
             ("update", self.update),
             ("logging", self.logging),
         ):

@@ -15,6 +15,7 @@ from pathlib import Path
 from . import jump_range
 from .carriers import CarrierBook
 from .crime import CrimeRecord
+from .materials import MaterialNotice, MaterialTable
 from .ships import ShipNames
 
 log = logging.getLogger(__name__)
@@ -290,6 +291,11 @@ class GameState:
         ship_cache: Path | None = None,
         carrier_book: CarrierBook | None = None,
         carrier_cache: Path | None = None,
+        material_table: MaterialTable | None = None,
+        materials_enabled: bool = True,
+        material_notify: bool = True,
+        rarity_label: str = "Редкость",
+        total_label: str = "Всего",
     ) -> None:
         #: Where the commander is heading next.
         self.jump_plan = JumpPlan()
@@ -330,6 +336,25 @@ class GameState:
         self.system = SystemState()
         self.carrier = CarrierState(ready_display_seconds=carrier_ready_display_seconds)
 
+        # -- engineering materials ---------------------------------------
+        #: Rarity and canonical names; rarity is the one thing the journal never
+        #: states, so it comes from the bundled table.
+        self.material_table = (
+            material_table if material_table is not None else MaterialTable()
+        )
+        #: What the commander holds, by journal symbol.
+        self.holdings: dict[str, int] = {}
+        #: A Materials event reports the whole hold at once and fires at login.
+        #: Until one has been seen the hold is unknown, not empty -- see
+        #: MaterialNotice.total.
+        self.materials_known = False
+        self.materials_enabled = materials_enabled
+        self.material_notify = material_notify
+        #: Labels, so the wording lives in config rather than in this module.
+        self.rarity_label = rarity_label
+        self.total_label = total_label
+        self.material_notices: list[MaterialNotice] = []
+
         self.last_event: str = ""
         self.last_event_at: datetime | None = None
         self.events_seen = 0
@@ -369,23 +394,24 @@ class GameState:
     # -- public API --------------------------------------------------------
 
     def apply(self, event: dict) -> None:
-        """Fold one journal event into the state; return any new alerts."""
+        """Fold one journal event into the state."""
         name = event.get("event")
         if not isinstance(name, str):
-            return []
+            return
         self.events_seen += 1
         self.last_event = name
         self.last_event_at = parse_timestamp(event.get("timestamp")) or utcnow()
 
         handler = getattr(self, f"_on_{name}", None)
         if handler is None:
-            return []
+            return
         try:
-            alerts = handler(event) or []
+            handler(event)
         except Exception:
+            # One malformed event must not stop the HUD: the journal is written
+            # by the game, but a replay of an older format or a hand-edited file
+            # can still carry something unexpected.
             log.exception("failed to process %s", name)
-            return []
-        return alerts
 
     def reset(self) -> None:
         self.system.clear()
@@ -761,3 +787,126 @@ class GameState:
 
     def _on_CarrierJumpRequestCancelled(self, event: dict) -> None:
         self._on_CarrierJumpCancelled(event)
+
+    # -- engineering materials ---------------------------------------------
+
+    def drain_material_notices(self) -> list[MaterialNotice]:
+        """Take the pickups queued since the last call.
+
+        The state layer knows the rarity and the running total and the overlay
+        knows nothing, so the two meet here rather than in either of them.
+        """
+        notices, self.material_notices = self.material_notices, []
+        return notices
+
+    def _on_Materials(self, event: dict) -> None:
+        """Seed the whole hold; this event reports everything at once."""
+        if not self.materials_enabled:
+            return
+        for kind in ("Raw", "Manufactured", "Encoded"):
+            items = event.get(kind)
+            if not isinstance(items, list):
+                continue
+            for raw in items:
+                if not isinstance(raw, dict):
+                    continue
+                symbol = self.material_table.normalise(str(raw.get("Name") or ""))
+                if not symbol:
+                    continue
+                count = raw.get("Count")
+                self.holdings[symbol] = int(count) if isinstance(count, int) else 0
+        self.materials_known = True
+
+    def _on_MaterialCollected(self, event: dict) -> None:
+        if not self.materials_enabled:
+            return
+        symbol = self.material_table.normalise(str(event.get("Name") or ""))
+        if not symbol:
+            return
+        count = event.get("Count")
+        count = int(count) if isinstance(count, int) else 1
+        self.holdings[symbol] = self.holdings.get(symbol, 0) + count
+        if self.material_notify:
+            self._announce_material(symbol, count, str(event.get("Name_Localised") or ""))
+
+    def _on_MaterialDiscarded(self, event: dict) -> None:
+        if not self.materials_enabled:
+            return
+        symbol = self.material_table.normalise(str(event.get("Name") or ""))
+        if not symbol:
+            return
+        count = event.get("Count")
+        count = int(count) if isinstance(count, int) else 0
+        self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - count)
+
+    def _on_MaterialTrade(self, event: dict) -> None:
+        """A trader swaps one material for another, at a rate.
+
+        The nested objects use ``Material`` and ``Quantity``, not ``Name`` and
+        ``Count``: reading the latter made every trade a silent no-op, and the
+        holdings then stayed wrong for the rest of the session. A test asserted
+        the invented keys on both sides, so it passed against the bug.
+        """
+        paid = event.get("Paid")
+        if isinstance(paid, dict):
+            self._consume_material(paid)
+        received = event.get("Received")
+        if isinstance(received, dict):
+            symbol = self._material_symbol(received)
+            amount = self._material_amount(received)
+            if symbol and amount:
+                symbol = self.material_table.normalise(symbol)
+                self.holdings[symbol] = self.holdings.get(symbol, 0) + amount
+
+    @staticmethod
+    def _material_symbol(entry: dict) -> str:
+        """The name field differs by event: Material, Name, or a localised one."""
+        return str(entry.get("Material") or entry.get("Name") or "")
+
+    @staticmethod
+    def _material_amount(entry: dict) -> int:
+        for key in ("Quantity", "Count", "Amount"):
+            value = entry.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        return 0
+
+    def _on_Synthesis(self, event: dict) -> None:
+        materials = event.get("Materials")
+        if isinstance(materials, list):
+            for raw in materials:
+                if isinstance(raw, dict):
+                    self._consume_material(raw)
+
+    def _on_EngineeringCraft(self, event: dict) -> None:
+        # The event names ingredients only in some versions; both spellings are
+        # handled because getting this wrong would silently inflate the hold.
+        for key in ("Ingredients", "Materials"):
+            items = event.get(key)
+            if isinstance(items, list):
+                for raw in items:
+                    if isinstance(raw, dict):
+                        self._consume_material(raw)
+
+    def _consume_material(self, entry: dict) -> None:
+        symbol = self.material_table.normalise(self._material_symbol(entry))
+        if not symbol:
+            return
+        amount = self._material_amount(entry)
+        self.holdings[symbol] = max(0, self.holdings.get(symbol, 0) - amount)
+
+    def _announce_material(self, symbol: str, count: int, localised: str) -> None:
+        """Queue the pickup line, e.g. "+1 Сера (Редкость: 1)  Всего: 285"."""
+        material = self.material_table.get(symbol)
+        self.material_notices.append(
+            MaterialNotice(
+                symbol=symbol,
+                name=self.material_table.display_name(symbol, localised),
+                count=count,
+                rarity=material.rarity if material else 0,
+                # Unknown is not zero: without a Materials event the hold has
+                # never been reported, and announcing "Всего: 1" for a hold of
+                # hundreds is worse than saying nothing about the total.
+                total=self.holdings.get(symbol, 0) if self.materials_known else None,
+            )
+        )

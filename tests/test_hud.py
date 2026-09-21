@@ -216,6 +216,59 @@ class HudRenderTests(unittest.TestCase):
         self.assertNotIn("[", hud.bar_text())
         hud.close()
 
+    # -- the material pickup line ------------------------------------------
+
+    def test_a_pickup_appears_in_the_bar(self) -> None:
+        """The one notification the project kept, on its own."""
+        from elite_hud.materials import MaterialNotice
+
+        config = Config()
+        hud = self._hud(config, make_state(config))
+        before = hud.bar_text()
+        hud.push_notice(
+            MaterialNotice(symbol="sulphur", name="Сера", count=1, rarity=1, total=285)
+        )
+        text = hud.bar_text()
+        self.assertIn("+1 Сера (Редкость: 1)  Всего: 285", text)
+        self.assertNotEqual(text, before)
+        self.assertEqual(
+            next(row.kind for row in hud._rows if row.kind == "notice"), "notice"
+        )
+        hud.close()
+
+    def test_the_pickup_honours_the_config_switches(self) -> None:
+        from elite_hud.materials import MaterialNotice
+
+        config = Config()
+        config.materials.rarity = False
+        config.materials.show_total = False
+        hud = self._hud(config, make_state(config))
+        hud.push_notice(
+            MaterialNotice(symbol="sulphur", name="Сера", count=2, rarity=1, total=285)
+        )
+        self.assertIn("+2 Сера", hud.bar_text())
+        self.assertNotIn("Редкость", hud.bar_text())
+        self.assertNotIn("Всего", hud.bar_text())
+        hud.close()
+
+    def test_the_pickup_goes_away_by_itself(self) -> None:
+        """Nothing to dismiss: the line is a glance, not a panel."""
+        from elite_hud.materials import MaterialNotice
+
+        config = Config()
+        config.materials.display_seconds = 0.5
+        hud = self._hud(config, make_state(config))
+        hud.push_notice(MaterialNotice(symbol="iron", name="Железо", count=1, rarity=1))
+        self.assertIn("Железо", hud.bar_text())
+
+        # A rebuild after the display window must drop the row; the clock is
+        # moved rather than slept so the test stays instant.
+        hud._notice_until = 0.0
+        hud.rebuild()
+        self.assertNotIn("Железо", hud.bar_text())
+        self.assertFalse(any(row.kind == "notice" for row in hud._rows))
+        hud.close()
+
 
 class SegmentCoverageTests(unittest.TestCase):
     """Every segment name the config accepts must reach a builder.

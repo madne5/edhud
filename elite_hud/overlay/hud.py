@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import Config
 from ..formatting import format_countdown, format_credits
+from ..materials import MaterialNotice
 from ..state import GameState
 from . import win32
 from .icons import draw_glyph
@@ -153,6 +154,9 @@ class HudWindow(QWidget):
         self._row_boxes: list[tuple[Row, float, float, float]] = []
         self._last_size: tuple[int, int] = (0, 0)
         self._last_position: tuple[int, int] | None = None
+        #: The pickup being shown, and when it stops being shown.
+        self._notice: MaterialNotice | None = None
+        self._notice_until: float = 0.0
 
         self._font, self._bold_font = self._build_fonts()
         self._metrics = QFontMetricsF(self._font)
@@ -273,11 +277,77 @@ class HudWindow(QWidget):
         primary.segments = self._compose()
         rows.append(primary)
 
+        notice = self._notice_row()
+        if notice is not None:
+            rows.append(notice)
+
         status = Row(style=self._status_style, kind="status", gap=self._metrics.height() * 0.28)
         status.segments = self._status_segments()
         if status.segments:
             rows.append(status)
         return rows
+
+    # -- transient notices -------------------------------------------------
+
+    def push_notice(self, notice: MaterialNotice) -> None:
+        """Show a pickup for a few seconds, above the status row.
+
+        Deliberately the whole of the notification system: one line of text that
+        fades by itself. No sound, no border, nothing to dismiss -- the bar is a
+        glance, and a pickup is worth a glance.
+        """
+        self._notice = notice
+        self._notice_until = _monotonic() + max(0.5, self.config.materials.display_seconds)
+        self.rebuild()
+
+    def notice_text(self) -> str:
+        """The transient line as plain text, or "" when nothing is showing."""
+        notice = self._notice
+        if notice is None:
+            return ""
+        cfg = self.config.materials
+        labels = self.config.overlay.labels
+        return notice.text(
+            rarity_label=labels.rarity,
+            total_label=labels.total,
+            show_rarity=cfg.rarity,
+            show_total=cfg.show_total,
+        )
+
+    def _notice_active(self) -> bool:
+        return self._notice is not None and _monotonic() < self._notice_until
+
+    def _notice_row(self) -> Row | None:
+        """The pickup row, while there is one to show.
+
+        Built here rather than in the configurable status row because it is not
+        a segment: it has no menu entry and no on/off switch of its own, and
+        putting it in the segment vocabulary would let the config accept a name
+        that only ever appears for four seconds.
+        """
+        if not self._notice_active():
+            # Expiring here rather than on a timer keeps the row honest even if
+            # the tick that would have cleared it never runs.
+            self._notice = None
+            return None
+        text = self.notice_text()
+        if not text:
+            self._notice = None
+            return None
+
+        cfg = self.config.overlay
+        row = Row(style=self._status_style, kind="notice", accent=cfg.accent,
+                  gap=self._metrics.height() * 0.24)
+        colour = cfg.success
+        row.segments = [
+            Segment(
+                glyph="leaf" if cfg.show_glyphs else None,
+                spans=[Span(text, color=colour, bold=True)],
+                glyph_color=colour,
+                lead=0.0,
+            )
+        ]
+        return row
 
     def _status_segments(self) -> list[Segment]:
         """The always-visible second row."""

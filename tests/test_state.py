@@ -160,16 +160,18 @@ class RobustnessTests(unittest.TestCase):
         self.state = GameState()
 
     def test_unknown_events_are_ignored(self) -> None:
-        self.assertEqual(self.state.apply({"event": "SomethingNew", "value": 1}), [])
-        self.assertEqual(self.state.apply({"no_event_key": True}), [])
+        # apply() is a fold, not a query: it reports what it changed by mutating
+        # state, and it returns nothing.
+        self.assertIsNone(self.state.apply({"event": "SomethingNew", "value": 1}))
+        self.assertIsNone(self.state.apply({"no_event_key": True}))
+        self.assertEqual(self.state.last_event, "SomethingNew")
 
     def test_handler_exceptions_do_not_propagate(self) -> None:
         # A malformed payload must never take the overlay down.
-        self.assertEqual(
-            self.state.apply({"event": "SAASignalsFound", "BodyID": "not-an-int", "Signals": "x"}),
-            [],
+        self.assertIsNone(
+            self.state.apply({"event": "SAASignalsFound", "BodyID": "not-an-int", "Signals": "x"})
         )
-        self.assertEqual(self.state.apply({"event": "FSDJump"}), [])
+        self.assertIsNone(self.state.apply({"event": "FSDJump"}))
 
     def test_last_event_is_tracked(self) -> None:
         self.state.apply({"event": "Shutdown", "timestamp": "2026-03-14T21:00:00Z"})
