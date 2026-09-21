@@ -50,7 +50,7 @@ class CarrierBookTests(unittest.TestCase):
         self.assertEqual(info.callsign, "V3G-N1H")
         self.assertEqual(info.name, "[KSS0] Yuri Gagarin")
         self.assertEqual(info.kind, "FleetCarrier")
-        self.assertEqual(info.hold(), (5142, 25000))
+        self.assertEqual(info.hold(), (7001, 25000))
         self.assertEqual(info.balance, 1_557_898_804)
 
     def test_a_location_gives_the_system_but_not_the_callsign(self) -> None:
@@ -117,7 +117,7 @@ class CarrierBookTests(unittest.TestCase):
         self.book.observe(SQUADRON)
         reopened = CarrierBook(cache_path=self.path)
         self.assertEqual([i.callsign for i in reopened.known()], ["V3G-N1H", "KSS0"])
-        self.assertEqual(reopened.info(3713063168).hold(), (42951, 60000))
+        self.assertEqual(reopened.info(3713063168).hold(), (6089, 60000))
 
     def test_a_corrupt_cache_is_survivable(self) -> None:
         self.path.write_text("{not json", encoding="utf-8")
@@ -163,17 +163,52 @@ class CarrierStateTests(unittest.TestCase):
         self.assertTrue(cache.is_file())
 
     def test_the_hold_figures_are_the_games_own(self) -> None:
-        """They do not add up, so nothing may be derived from them.
+        """Every figure is read, never derived by subtraction.
 
-        V3G-N1H reports 25000 total, 7001 cargo and 5142 free: 12857 is
-        accounted for by nothing in the event.
+        FreeSpace is not TotalCapacity - Cargo, because crew quarters, ship
+        packs and outstanding buy orders all take space too. SpaceUsage does
+        close exactly, but only when every term is included, so a display that
+        wants "how much is aboard" has to read Cargo.
         """
         config = Config()
         state = GameState()
         state.apply(PERSONAL)
         info = state.carriers.info(3714982656)
         self.assertNotEqual(info.free_space, info.total_capacity - info.cargo)
-        self.assertEqual(info.hold(), (5142, 25000))
+        self.assertEqual(info.hold(), (7001, 25000))
+        self.assertEqual(info.cargo, 7001)
+        self.assertEqual(info.free_space, 5142)
+
+    def test_the_reservation_is_read(self) -> None:
+        """12857 t of the hold is held by a buy order, and it is in the event.
+
+        It is what makes 25000, 7001 and 5142 add up, and reading it is what
+        stops a purchase contract from being shown as delivered cargo.
+        """
+        state = GameState()
+        state.apply(
+            {
+                "event": "CarrierStats",
+                "CarrierID": 3714982656,
+                "Callsign": "V3G-N1H",
+                "SpaceUsage": {"TotalCapacity": 25000, "Crew": 0, "Cargo": 7001,
+                               "CargoSpaceReserved": 12857, "ShipPacks": 0,
+                               "ModulePacks": 0, "FreeSpace": 5142},
+            }
+        )
+        info = state.carriers.info(3714982656)
+        self.assertEqual(info.cargo_space_reserved, 12857)
+        self.assertEqual(info.reserved_note(), "12857")
+        # The whole event closes, which is why nothing needs to be inferred.
+        self.assertEqual(
+            info.cargo + info.cargo_space_reserved + info.free_space
+            + info.crew,
+            info.total_capacity,
+        )
+
+    def test_no_reservation_reports_nothing(self) -> None:
+        info = CarrierInfo(carrier_id=1, cargo_space_reserved=0)
+        self.assertEqual(info.reserved_note(), "")
 
 
 class DockingAccessTests(unittest.TestCase):

@@ -411,20 +411,29 @@ class HudWindow(QWidget):
         )
 
     def _carrier_segments(self) -> list[Segment]:
-        """Every carrier the commander has: callsign and free hold space.
+        """Every carrier the commander has: callsign, load, and any reservation.
 
-        Free space is the game's own ``FreeSpace``, not the capacity minus the
-        cargo: those two do not agree -- one carrier in the journals reports
-        25000 total, 7001 cargo and 5142 free, leaving 12857 unaccounted for --
-        so nothing is derived by subtraction here.
+        The load is ``Cargo`` -- what is actually aboard. It used to be
+        ``FreeSpace``, which was wrong in a way that mattered to anyone running
+        a carrier: placing a buy order reserves the space immediately, so a
+        20000 t contract on a 25000 t carrier dropped free space to 5142 and the
+        bar read as though 20000 t had already been delivered. Free space also
+        excludes crew quarters, ship packs and module packs, so it was never a
+        measure of the hold in the first place.
+
+        ``CargoSpaceReserved`` is reported beside it when it is not zero, so the
+        commander can see that the shortfall is an outstanding order rather than
+        cargo that went missing. Nothing here is derived by subtraction: the
+        journal gives every figure, and SpaceUsage closes exactly.
         """
         infos = self.state.carriers.known()
         if not infos:
             return []
         cfg = self.config.overlay
+        labels = cfg.labels
         out: list[Segment] = []
         for info in infos:
-            free, total = info.hold()
+            loaded, total = info.hold()
             # A squadron carrier is not the commander's own, so its callsign
             # reads dimmer. The icon carries a different fact: whether anyone
             # may dock, green for open and orange for restricted.
@@ -438,12 +447,16 @@ class HudWindow(QWidget):
             spans = [Span(info.callsign, color=colour, bold=True)]
             if total:
                 spans.append(
-                    Span(f" {cfg.labels.carrier_free} ", color=cfg.foreground, dim=0.7)
+                    Span(f" {labels.carrier_cargo} ", color=cfg.foreground, dim=0.7)
                 )
-                spans.append(Span(f"{free}/{total}", color=colour))
+                spans.append(Span(f"{loaded}/{total}", color=colour))
+                spans.append(Span(f" {labels.tonnes}", color=cfg.foreground, dim=0.7))
+            reserved = info.reserved_note()
+            if reserved:
                 spans.append(
-                    Span(f" {cfg.labels.tonnes}", color=cfg.foreground, dim=0.7)
+                    Span(f" · {labels.carrier_reserved} ", color=cfg.foreground, dim=0.7)
                 )
+                spans.append(Span(f"{reserved}", color=cfg.warning))
             out.append(
                 Segment(
                     glyph="carrier" if cfg.show_glyphs else None,

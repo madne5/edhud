@@ -66,8 +66,11 @@ class LabelConfig:
     #: unsold exploration data, counted rather than valued
     #: tonnes, for the cargo hold
     tonnes: str = "т"
-    #: free hold space on a carrier: "KSS0 своб. 42951/60000 т"
-    carrier_free: str = "своб."
+    #: what a carrier actually holds: "KSS0 груз 6313/60000 т"
+    carrier_cargo: str = "груз"
+    #: space held back by an outstanding buy order, shown only when there is
+    #: one: "V3G-N1H груз 7001/25000 т · бронь 12857"
+    carrier_reserved: str = "бронь"
     #: units for the cartography counts
     #: jump target: "след. Blu Theia CB-K c23-0 (K, 3)"
     jump_next: str = "след."

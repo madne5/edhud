@@ -343,11 +343,13 @@ class CarrierSegmentTests(unittest.TestCase):
             {"event": "CarrierStats", "CarrierID": 3714982656,
              "CarrierType": "FleetCarrier", "Callsign": "V3G-N1H",
              "DockingAccess": "squadronfriends",
-             "SpaceUsage": {"TotalCapacity": 25000, "Cargo": 7001, "FreeSpace": 5142}},
+             "SpaceUsage": {"TotalCapacity": 25000, "Crew": 0, "Cargo": 7001,
+                            "CargoSpaceReserved": 0, "FreeSpace": 5142}},
             {"event": "CarrierStats", "CarrierID": 3713063168,
              "CarrierType": "SquadronCarrier", "Callsign": "KSS0",
              "DockingAccess": "all",
-             "SpaceUsage": {"TotalCapacity": 60000, "Cargo": 6089, "FreeSpace": 42951}},
+             "SpaceUsage": {"TotalCapacity": 60000, "Crew": 6270, "Cargo": 6089,
+                            "CargoSpaceReserved": 0, "FreeSpace": 42951}},
         ):
             state.apply(event)
         return state
@@ -357,7 +359,7 @@ class CarrierSegmentTests(unittest.TestCase):
         status = next((row for row in hud._rows if row.kind == "status"), None)
         if status is None:
             return []
-        label = hud.config.overlay.labels.carrier_free
+        label = hud.config.overlay.labels.carrier_cargo
         return [
             segment
             for segment in status.segments
@@ -383,8 +385,40 @@ class CarrierSegmentTests(unittest.TestCase):
         text = hud.bar_text()
         self.assertIn("V3G-N1H", text)
         self.assertIn("KSS0", text)
-        self.assertIn("5142/25000", text)
-        self.assertIn("42951/60000", text)
+        # Cargo, not free space: 7001 t is what is aboard V3G-N1H.
+        self.assertIn("7001/25000", text)
+        self.assertIn("6089/60000", text)
+        self.assertNotIn("5142/25000", text, "free space is not the load")
+        hud.close()
+
+    def test_a_buy_order_is_not_shown_as_delivered_cargo(self) -> None:
+        """The whole point of reading CargoSpaceReserved.
+
+        With a 12857 t purchase contract outstanding, V3G-N1H reports 7001 t
+        cargo and 5142 t free. Showing free space made the bar read as though
+        almost the whole hold were full, when two thirds of it was still empty
+        and merely promised to a buy order.
+        """
+        config = Config()
+        state = GameState()
+        state.apply(
+            {"event": "CarrierStats", "CarrierID": 3714982656,
+             "CarrierType": "FleetCarrier", "Callsign": "V3G-N1H",
+             "DockingAccess": "all",
+             "SpaceUsage": {"TotalCapacity": 25000, "Crew": 0, "Cargo": 7001,
+                            "CargoSpaceReserved": 12857, "FreeSpace": 5142}}
+        )
+        hud = self._hud(state, config)
+        text = hud.bar_text()
+        self.assertIn("7001/25000", text)
+        reserved = config.overlay.labels.carrier_reserved
+        self.assertIn(f"{reserved} 12857", text)
+        hud.close()
+
+    def test_the_reservation_is_hidden_when_there_is_none(self) -> None:
+        config = Config()
+        hud = self._hud(self._state(), config)
+        self.assertNotIn(config.overlay.labels.carrier_reserved, hud.bar_text())
         hud.close()
 
     def test_each_carrier_is_its_own_segment(self) -> None:

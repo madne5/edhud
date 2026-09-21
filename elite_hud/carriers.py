@@ -13,12 +13,14 @@ identifier, the type and the system but no callsign. So what is learned from
 CarrierStats is cached beside the configuration and re-shown from there, and the
 location is refreshed from the login events in between.
 
-On the two numbers for the hold: the game reports ``Cargo`` and ``FreeSpace``
-separately, and they do not add up to ``TotalCapacity``. In these journals
-``V3G-N1H`` reports 25000 total with 7001 cargo and 5142 free, which leaves 12857
-accounted for by nothing in the event. Both figures are therefore shown exactly
-as the game states them, and nothing is derived by subtraction -- a commander
-subtracting one from the other would get a number the game does not agree with.
+On the numbers for the hold: ``SpaceUsage`` reports ``TotalCapacity``, ``Cargo``,
+``CargoSpaceReserved``, ``ShipPacks``, ``ModulePacks``, ``Crew`` and ``FreeSpace``,
+and they close exactly. In these journals ``V3G-N1H`` reports 25000 total with
+7001 cargo, 12857 reserved and 5142 free: the reservation is a buy order holding
+the space before anything has been delivered, and it is the term that makes the
+figures add up. Every value is read from the event rather than derived from
+another, and the load is always ``Cargo`` -- showing ``FreeSpace`` as though it
+were the load is what made a purchase contract look like delivered goods.
 """
 
 from __future__ import annotations
@@ -49,6 +51,11 @@ class CarrierInfo:
     cargo: int = 0
     total_capacity: int = 0
     free_space: int = 0
+    #: Tonnes held back by outstanding buy orders. Counted in ``free_space``
+    #: before anything has been delivered, which is why free space is not a
+    #: measure of what is on board: a 20000 t order on a 25000 t carrier drops
+    #: free space to about 5000 while the hold still holds almost nothing.
+    cargo_space_reserved: int = 0
     crew: int = 0
     fuel: int = 0
     #: "all" | "friends" | "squadron" | "squadronfriends" | "none", as the game
@@ -72,8 +79,19 @@ class CarrierInfo:
         return self.kind == "SquadronCarrier"
 
     def hold(self) -> tuple[int, int]:
-        """(free, total) as the game reports them, or (0, 0) when unknown."""
-        return (self.free_space, self.total_capacity)
+        """(cargo, total) -- what is actually in the hold, of what fits.
+
+        Cargo, not free space. The two differ by more than the load: free space
+        also excludes crew quarters, ship packs and module packs, and it falls
+        the moment a buy order is placed, before a single tonne has arrived.
+        Showing free space as though it were the load made a 20000 t purchase
+        contract read as 20000 t already delivered.
+        """
+        return (self.cargo, self.total_capacity)
+
+    def reserved_note(self) -> str:
+        """The buy-order reservation as a short suffix, or "" when there is none."""
+        return str(self.cargo_space_reserved) if self.cargo_space_reserved > 0 else ""
 
     def access_role(self) -> str:
         """Which palette role the carrier's icon should use.
@@ -129,7 +147,10 @@ class CarrierBook:
                 text = value.get(name)
                 if isinstance(text, str):
                     setattr(info, name, text)
-            for name in ("cargo", "total_capacity", "free_space", "crew", "fuel"):
+            for name in (
+                "cargo", "total_capacity", "free_space", "cargo_space_reserved",
+                "crew", "fuel",
+            ):
                 number = value.get(name)
                 if isinstance(number, int) and not isinstance(number, bool):
                     setattr(info, name, number)
@@ -202,6 +223,13 @@ class CarrierBook:
                     usage.get("TotalCapacity"), info.total_capacity
                 )
                 info.free_space = self._int_or(usage.get("FreeSpace"), info.free_space)
+                # Read, not derived. SpaceUsage closes exactly -- Cargo +
+                # CargoSpaceReserved + FreeSpace + Crew + packs = TotalCapacity
+                # -- so subtracting one field from another invents a number
+                # instead of reporting one.
+                info.cargo_space_reserved = self._int_or(
+                    usage.get("CargoSpaceReserved"), info.cargo_space_reserved
+                )
                 info.crew = self._int_or(usage.get("Crew"), info.crew)
             finance = event.get("Finance")
             if isinstance(finance, dict):
