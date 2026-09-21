@@ -98,16 +98,20 @@ class CandidateTests(unittest.TestCase):
         because none of the candidates match on macOS.
         """
         # Only the environment is faked; faking the platform as well would send the
-        # code down a path that builds WindowsPath, which cannot exist here.
-        with mock.patch.dict(os.environ, {"USERPROFILE": "/tmp/Profile"}, clear=False):
+        # code down a path that builds WindowsPath, which cannot exist on macOS.
+        # Expectations are built with Path too, so the separators are whatever the
+        # running platform uses -- an f-string with forward slashes passed here and
+        # failed on Windows, which is the platform this code is for.
+        profile = Path("elite-hud-profile")
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(profile)}, clear=False):
             os.environ.pop("OneDrive", None)
             os.environ.pop("OneDriveConsumer", None)
             candidates = [str(p) for p in paths._windows_candidates()]
 
-        self.assertIn(f"/tmp/Profile/Saved Games/{ED_SUBPATH}", candidates)
-        self.assertIn(f"/tmp/Profile/OneDrive/Saved Games/{ED_SUBPATH}", candidates,
-                      "the OneDrive layout is one of the ones the game uses")
-        self.assertIn(f"/tmp/Profile/Documents/Saved Games/{ED_SUBPATH}", candidates)
+        for layout in ("Saved Games", "OneDrive/Saved Games", "Documents/Saved Games"):
+            expected = str(profile / Path(layout) / ED_SUBPATH)
+            with self.subTest(layout=layout):
+                self.assertIn(expected, candidates, f"missing: {candidates}")
         self.assertTrue(all(c.endswith(str(ED_SUBPATH)) for c in candidates))
 
 
