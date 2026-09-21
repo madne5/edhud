@@ -42,7 +42,8 @@ class DefaultsTests(unittest.TestCase):
         # Everything available is on: a segment with nothing to say hides itself,
         # so shipping one off by default only hides the feature.
         self.assertEqual(
-            config.overlay.status_segments, ["next", "carriers", "mode", "crime"]
+            config.overlay.status_segments,
+            ["next", "carriers", "colony", "mode", "crime"],
         )
 
     def test_generated_toml_round_trips(self) -> None:

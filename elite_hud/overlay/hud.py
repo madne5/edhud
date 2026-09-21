@@ -713,6 +713,52 @@ class HudWindow(QWidget):
             lead=lead,
         )
 
+    def _colony_segment(self, lead: float) -> Segment | None:
+        """How far along a construction site is, and what it still wants.
+
+        The figures are the site's own: progress as it reported it, and the
+        tonnes still owing summed from each commodity's required minus provided.
+        The commodity named is the one with the most outstanding, because the row
+        is a glance and the full list of twenty-odd is not.
+        """
+        site = self.state.colony.current()
+        if site is None:
+            return None
+        cfg = self.config.overlay
+        labels = cfg.labels
+        name = site.name or labels.colony
+        spans = [Span(f"{name} ", color=cfg.foreground, dim=0.75)]
+
+        if site.complete:
+            spans.append(Span(labels.colony_done, color=cfg.success, bold=True))
+        elif site.failed:
+            spans.append(Span(labels.colony_failed, color=cfg.danger, bold=True))
+        else:
+            colour = cfg.success if site.percent >= 100.0 else cfg.accent
+            spans.append(Span(f"{site.percent:.0f}%", color=colour, bold=True))
+            if site.remaining:
+                spans.append(Span(f"  ·  {labels.colony_left} ", color=cfg.foreground, dim=0.7))
+                spans.append(
+                    Span(f"{site.remaining} {labels.tonnes}", color=cfg.accent, bold=True)
+                )
+            most = site.most_needed()
+            if most is not None:
+                spans.append(Span(f"  ·  {labels.colony_needed} ", color=cfg.foreground, dim=0.7))
+                spans.append(
+                    Span(
+                        f"{most.label} {most.remaining} {labels.tonnes}",
+                        color=cfg.foreground,
+                        dim=0.85,
+                        elastic=True,
+                    )
+                )
+        return Segment(
+            glyph="globe" if cfg.show_glyphs else None,
+            spans=spans,
+            glyph_color=cfg.accent if not site.failed else cfg.danger,
+            lead=lead,
+        )
+
     def _balance_segment(self, lead: float) -> Segment | None:
         """The credit balance.
 
@@ -1175,6 +1221,7 @@ class HudWindow(QWidget):
         "ship": _ship_segment,
         "missions": _missions_segment,
         "deliveries": _deliveries_segment,
+        "colony": _colony_segment,
         "mode": _mode_segment,
         "next": _next_segment,
         "crime": _crime_segment,
