@@ -15,7 +15,6 @@ from pathlib import Path
 from . import jump_range
 from .carriers import CarrierBook
 from .crime import CrimeRecord
-from .colony import ColonyBook
 from .deliveries import DeliveryBook
 from .materials import MaterialNotice, MaterialTable
 from .notices import DockingNotice
@@ -307,8 +306,6 @@ class GameState:
         self.crime = CrimeRecord()
         #: Open missions that involve carrying a commodity somewhere.
         self.deliveries = DeliveryBook()
-        #: Colonisation construction sites, as their reports describe them.
-        self.colony = ColonyBook()
         #: Ship model names, learned from the journal (see elite_hud/ships.py).
         # `is not None`, not `or`: these objects define __len__, so an empty one
         # is falsy and would be silently replaced.
@@ -598,12 +595,6 @@ class GameState:
         """How much of a mission's commodity has moved, and how much is left."""
         self.deliveries.observe(event)
 
-    # -- colonisation ------------------------------------------------------
-
-    def _on_ColonisationConstructionDepot(self, event: dict) -> None:
-        """The whole site at once: progress, and every commodity it still wants."""
-        self.colony.observe(event)
-
     def _on_Missions(self, event: dict) -> None:
         """Written at startup with whatever missions are still open."""
         self.missions_known = True
@@ -684,7 +675,6 @@ class GameState:
         # carrier book needs it: a cargo transfer often arrives in a later
         # journal file than the Docked event that began the visit.
         self.carriers.observe(event)
-        self.colony.observe(event)
         self._enter_system(str(event.get("StarSystem") or ""), int(event.get("SystemAddress") or 0))
 
     def _on_CarrierJump(self, event: dict) -> None:
@@ -775,13 +765,11 @@ class GameState:
         self.carriers.observe(event)
 
     def _on_Docked(self, event: dict) -> None:
-        # Which station we are at decides two things: whether a later
-        # CargoTransfer belongs to a carrier or to the SRV, and whether the
-        # construction site on screen is the one being stood on. The system is
-        # not taken from here -- Location and FSDJump set it, and entering a
-        # system consumes a leg of the jump plan.
+        # Which station we are at decides whether a later CargoTransfer belongs
+        # to a carrier or to the SRV. The system is not taken from here --
+        # Location and FSDJump set it, and entering a system consumes a leg of
+        # the jump plan.
         self.carriers.observe(event)
-        self.colony.observe(event)
 
     def _on_Undocked(self, event: dict) -> None:
         self.carriers.observe(event)

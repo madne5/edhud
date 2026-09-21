@@ -43,7 +43,7 @@ class DefaultsTests(unittest.TestCase):
         # so shipping one off by default only hides the feature.
         self.assertEqual(
             config.overlay.status_segments,
-            ["next", "carriers", "colony", "mode", "crime"],
+            ["next", "carriers", "mode", "crime"],
         )
 
     def test_generated_toml_round_trips(self) -> None:

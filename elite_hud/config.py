@@ -85,12 +85,6 @@ class LabelConfig:
     #: cargo missions: "взять 196 т · сдать 4320 т"
     deliveries_collect: str = "взять"
     deliveries_deliver: str = "сдать"
-    #: colonisation site: "Shaara Gateway 12% · осталось 3120 т"
-    colony: str = "стройка"
-    colony_left: str = "осталось"
-    colony_needed: str = "нужно"
-    colony_done: str = "достроена"
-    colony_failed: str = "стройка провалена"
     #: EDSM line for the system being jumped to
     edsm_discovered: str = "открыта"
     edsm_fuel: str = "заправка"
@@ -162,7 +156,7 @@ class OverlayConfig:
     #: and cost a commander a trip into the tray menu to discover a feature
     #: existed at all.
     status_segments: list[str] = field(
-        default_factory=lambda: ["next", "carriers", "colony", "mode", "crime"]
+        default_factory=lambda: ["next", "carriers", "mode", "crime"]
     )
     #: Show the line that explains a refused docking request, with its reason.
     show_docking_denied: bool = True
@@ -479,7 +473,7 @@ class Config:
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
 VALID_SEGMENTS = {
-    "carrier", "system", "balance", "cargo", "ship", "missions", "deliveries", "colony",
+    "carrier", "system", "balance", "cargo", "ship", "missions", "deliveries",
 }
 
 #: Human names for the segments, in the order they appear in a row. Used by the
@@ -492,7 +486,6 @@ SEGMENT_NAMES: dict[str, str] = {
     "cargo": "Трюм",
     "missions": "Миссии",
     "deliveries": "Груз по миссиям",
-    "colony": "Стройка колонии",
 }
 STATUS_SEGMENT_NAMES: dict[str, str] = {
     "next": "Цель прыжка",
@@ -500,14 +493,13 @@ STATUS_SEGMENT_NAMES: dict[str, str] = {
     "mode": "Режим игры",
     "crime": "Розыск",
     "deliveries": "Груз по миссиям",
-    "colony": "Стройка колонии",
 }
 
 #: Segments accepted in the bottom row. Ship and missions now default to the top
 #: row but are still accepted here: each builder works in either row, and
 #: refusing them would silently drop the segments of an existing config for no
 #: good reason.
-VALID_STATUS_SEGMENTS = {"next", "carriers", "mode", "crime", "deliveries", "colony"}
+VALID_STATUS_SEGMENTS = {"next", "carriers", "mode", "crime", "deliveries"}
 VALID_CONFIDENCES = {"possible", "guaranteed", "confirmed"}
 VALID_UPDATE_MODES = {"off", "notify", "download", "install"}
 VALID_UPDATE_ASSETS = {"any", "installer", "portable"}
