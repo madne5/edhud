@@ -50,8 +50,31 @@ class DefaultsTests(unittest.TestCase):
         text = Config().to_toml()
         parsed = tomllib.loads(text)  # must not raise
         self.assertIn("overlay", parsed)
-        self.assertIn("labels", parsed["overlay"])
-        self.assertEqual(parsed["overlay"]["labels"]["missions"], "миссии")
+        self.assertEqual(parsed["overlay"]["position"], "top-center")
+
+    def test_the_generated_file_holds_only_what_is_worth_changing(self) -> None:
+        """The label table and the internal timings are read, never written.
+
+        A file that lists everything is a file nobody reads: it was 120 lines, 41
+        of them the complete label table of one language -- which would then
+        override the language switch for ever. A hand-written table is still
+        honoured, which tests/test_i18n.py checks.
+        """
+        text = Config().to_toml()
+        self.assertNotIn("[overlay.labels]", text)
+        for hidden in (
+            "poll_interval", "replay_history", "refresh_hz", "background_alpha",
+            "spool_minutes", "jump_cooldown_seconds", "mission_capacity",
+            "timeout_seconds", "keep_downloads", "token", "level",
+        ):
+            with self.subTest(hidden=hidden):
+                self.assertNotIn(f"{hidden} =", text)
+        # Nothing that is worth having is missing either.
+        for wanted in ("position", "font_size", "language", "segments", "mode",
+                       "display_seconds", "show_glyphs", "raw_color"):
+            with self.subTest(wanted=wanted):
+                self.assertIn(f"{wanted} =", text)
+        self.assertLess(len(text.splitlines()), 80, "short enough to read")
 
     def test_generated_toml_loads_back_to_the_same_values(self) -> None:
         """Values that differ from the defaults, or the check proves nothing.
@@ -64,9 +87,12 @@ class DefaultsTests(unittest.TestCase):
         written.overlay.font_family = "Courier New"
         written.overlay.font_size = 19
         written.overlay.position = "bottom-right"
-        written.overlay.labels.carrier = "НОСИТЕЛЬ"
-        written.journal.poll_interval = 2.5
-        written.carrier.spool_minutes = 12.0
+        written.overlay.opacity = 0.5
+        written.overlay.language = "en"
+        written.journal.history_days = 3
+        written.journal.path = "D:/journals"
+        written.update.mode = "notify"
+        written.materials.display_seconds = 9.0
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.toml"
             path.write_text(written.to_toml(), encoding="utf-8")
@@ -74,11 +100,15 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(loaded.overlay.font_family, "Courier New")
         self.assertEqual(loaded.overlay.font_size, 19)
         self.assertEqual(loaded.overlay.position, "bottom-right")
-        self.assertEqual(loaded.journal.poll_interval, 2.5)
-        self.assertEqual(loaded.carrier.spool_minutes, 12.0)
-        # A label is read from the file as well -- this is the table that the
-        # language machinery deliberately leaves to the commander.
-        self.assertEqual(loaded.overlay.labels.carrier, "НОСИТЕЛЬ")
+        self.assertEqual(loaded.overlay.opacity, 0.5)
+        self.assertEqual(loaded.journal.history_days, 3)
+        self.assertEqual(loaded.journal.path, "D:/journals")
+        self.assertEqual(loaded.update.mode, "notify")
+        self.assertEqual(loaded.materials.display_seconds, 9.0)
+        # The language is a setting like any other, and it brings its labels with
+        # it -- the label table itself is deliberately not in the file.
+        self.assertEqual(loaded.overlay.language, "en")
+        self.assertEqual(loaded.overlay.labels.balance, "balance")
 
 
 class LoadingTests(unittest.TestCase):
@@ -626,7 +656,7 @@ class SectionPlacementTests(unittest.TestCase):
         path = Path(tempfile.mkdtemp()) / "config.toml"
         ensure_config_file(path)
         original = path.read_text(encoding="utf-8")
-        deleted = "poll_interval = 0.75"
+        deleted = "history_days = 7"
         self.assertIn(deleted, original, "the fixture must delete a real line")
         path.write_text(original.replace(deleted, "", 1), encoding="utf-8")
 
@@ -634,7 +664,7 @@ class SectionPlacementTests(unittest.TestCase):
         text = path.read_text(encoding="utf-8")
         reloaded = Config.load(path)
         self.assertEqual(reloaded.journal.path, "X")
-        self.assertEqual(reloaded.journal.poll_interval, 0.75, "the deleted line stays gone")
+        self.assertEqual(reloaded.journal.history_days, 7, "the deleted line stays gone")
         # And the new key went into [journal], before the next section header.
         self.assertLess(text.index("path = \"X\""), text.index("[carrier]"))
 

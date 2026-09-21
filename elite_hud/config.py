@@ -435,9 +435,21 @@ class Config:
         return i18n.messages(self.overlay.language)
 
     def to_toml(self) -> str:
+        """The configuration file, with only the settings worth changing in it.
+
+        Every field is readable from the file, but writing all of them out made a
+        hundred and twenty lines of which most were timings that belong to
+        Frontier, a token for a private repository, and the complete label table.
+        A file nobody can scan is a file nobody edits, so the generated one lists
+        what a commander plausibly wants -- and the rest keeps its default, or can
+        be added by hand with the names from the documentation.
+        """
         lines: list[str] = [
             "# elite-hud configuration",
-            "# Every key here is optional; delete a line to fall back to the default.",
+            "",
+            "# Only the settings worth changing are listed. Everything else has a",
+            "# default and works without being written here; the full set is in",
+            "# docs/FEATURES_RU.md. Deleting a line falls back to its default.",
             "",
         ]
         for section_name, section in (
@@ -450,14 +462,22 @@ class Config:
             ("update", self.update),
             ("logging", self.logging),
         ):
+            hidden = HIDDEN_FROM_FILE.get(section_name, frozenset())
+            body = [
+                (key, value)
+                for key, value in asdict(section).items()
+                if key not in hidden
+            ]
+            nested = [(key, value) for key, value in body if isinstance(value, dict)]
+            # A section that is empty once its hidden keys are gone is not written
+            # at all, rather than left as a bare header with nothing under it.
+            plain = [(key, value) for key, value in body if not isinstance(value, dict)]
+            if not plain and not bool(nested):
+                continue
             lines.append(f"[{section_name}]")
-            nested: list[tuple[str, Any]] = []
-            for key, value in asdict(section).items():
-                # Nested dataclasses become their own sub-table, not a dict literal.
-                if isinstance(value, dict):
-                    nested.append((key, value))
-                    continue
+            for key, value in plain:
                 lines.append(f"{key} = {_toml_value(value)}")
+            # Nested dataclasses become their own sub-table, not a dict literal.
             for key, value in nested:
                 lines.append("")
                 lines.append(f"[{section_name}.{key}]")
@@ -465,11 +485,34 @@ class Config:
                     lines.append(f"{sub_key} = {_toml_value(sub_value)}")
             lines.append("")
 
-        lines.append("# Override individual species payouts when Frontier rebalances them.")
-        lines.append('# "Stratum Tectonicas" = 19010800')
-        lines.append("")
-        return "\n".join(lines)
+        return "\n".join(lines).rstrip("\n") + "\n"
 
+
+#: Settings that are read from the file but never written to it.
+#:
+#: These are the ones a commander would not reasonably change: timings that belong
+#: to Frontier (and that the carrier report can measure), a token for a private
+#: repository, a log level, the game's own mission limit. They keep working if
+#: written by hand -- they are omitted from the generated file so that what is in
+#: it is worth reading.
+#:
+#: ``overlay.labels`` is the whole table: labels are how localisation works, and a
+#: file holding one language's wording would override the language switch for ever.
+HIDDEN_FROM_FILE: dict[str, frozenset[str]] = {
+    "journal": frozenset({"poll_interval", "replay_history"}),
+    "overlay": frozenset({"refresh_hz", "background_alpha", "labels"}),
+    "carrier": frozenset({
+        "spool_minutes", "jump_cooldown_seconds", "jump_duration_seconds",
+        "cancel_cooldown_seconds",
+    }),
+    "commander": frozenset({"mission_capacity"}),
+    "materials": frozenset(),
+    "edsm": frozenset({"timeout_seconds"}),
+    "update": frozenset({
+        "token", "asset", "timeout_seconds", "keep_downloads", "include_prerelease",
+    }),
+    "logging": frozenset({"level"}),
+}
 
 VALID_POSITIONS = {"top-center", "top-left", "top-right", "bottom-center", "bottom-left", "bottom-right"}
 VALID_SEGMENTS = {
