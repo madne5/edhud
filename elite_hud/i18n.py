@@ -75,14 +75,24 @@ class Messages:
     docking_reason_unknown: str = "причина не указана"
     #: The game's own reasons, translated where the meaning is unambiguous. A
     #: reason not in this table is quoted as it stands rather than guessed at.
+    #:
+    #: The set is the one a journal parser actually enumerates -- ed-journals
+    #: 0.9.0, DockingDeniedReason -- because this project's own journals only ever
+    #: contain Distance (28 times, and nothing else). "Offline" was in this table
+    #: and is not a reason the game sends; Offences, RestrictedAccess,
+    #: JumpImminent and NoReason are, and were missing, so those four would have
+    #: been shown as raw symbols.
     docking_reasons: dict[str, str] = field(
         default_factory=lambda: {
             "Distance": "слишком далеко от станции",
             "NoSpace": "все площадки заняты",
             "TooLarge": "корабль слишком большой для площадки",
             "Hostile": "станция враждебна",
-            "Offline": "стыковка отключена",
+            "Offences": "есть неоплаченные штрафы",
             "ActiveFighter": "сначала верните истребитель на борт",
+            "RestrictedAccess": "нет разрешения на стыковку с этим носителем",
+            "JumpImminent": "носитель вот-вот прыгнет",
+            "NoReason": "причина не указана",
         }
     )
 
@@ -217,8 +227,11 @@ ENGLISH_MESSAGES: dict[str, object] = {
         "NoSpace": "every landing pad is taken",
         "TooLarge": "the ship is too large for the pad",
         "Hostile": "the station is hostile",
-        "Offline": "docking is offline",
+        "Offences": "you have unpaid fines",
         "ActiveFighter": "recall your fighter first",
+        "RestrictedAccess": "no docking permission for this carrier",
+        "JumpImminent": "the carrier is about to jump",
+        "NoReason": "reason not given",
     },
     "update_check_now": "Check for updates",
     "update_none_found": "No update found",

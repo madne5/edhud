@@ -168,24 +168,49 @@ class WiredThroughTests(unittest.TestCase):
     """The language reaches the parts that are not the bar."""
 
     def test_the_update_service_speaks_the_language(self) -> None:
+        """What the service emits, not the table it was handed.
+
+        Reading ``service.messages`` back only proves the table was stored: the
+        service could emit hardcoded Russian and this would not notice. So a real
+        event is triggered -- asking to install with nothing available -- and the
+        message it emits is checked.
+        """
         from elite_hud.config import UpdateConfig
         from elite_hud.update_service import UpdateService
 
         config = Config()
         config.overlay.language = "en"
         config.apply_language()
-        service = UpdateService(UpdateConfig(), messages=config.messages)
-        self.assertEqual(service.messages.update_check_now, "Check for updates")
-        self.assertEqual(
-            service.messages.update_installing.format(version="1.0"), "installing 1.0…"
+
+        events: list[tuple[str, str]] = []
+        service = UpdateService(
+            UpdateConfig(), messages=config.messages,
+            on_event=lambda event: events.append((event.kind, event.message)),
         )
+        service.download_and_install()  # nothing available: emits an error
+        self.assertEqual(events, [("error", "no update is available")])
+
+        russian = UpdateService(UpdateConfig(), messages=i18n.messages("ru"),
+                                on_event=lambda event: events.append((event.kind, event.message)))
+        russian.download_and_install()
+        self.assertEqual(events[-1], ("error", "нет доступного обновления"))
 
     def test_network_failures_speak_the_language(self) -> None:
-        from elite_hud.updater import GitHubClient
+        """The text of the error the tray would show, in the chosen language."""
+        from elite_hud.updater import GitHubClient, GitHubError
 
-        english = GitHubClient("a/b", messages=i18n.messages("en"))
-        self.assertEqual(english.messages.net_timeout, "GitHub did not answer in time")
-        self.assertIn("{code}", english.messages.net_http_error)
+        for language, expected in (
+            ("en", "no connection to GitHub"),
+            ("ru", "нет связи с GitHub"),
+        ):
+            with self.subTest(language=language):
+                client = GitHubClient(
+                    "a/b", timeout=1, api_base="http://127.0.0.1:1",
+                    messages=i18n.messages(language),
+                )
+                with self.assertRaises(GitHubError) as caught:
+                    client.releases()
+                self.assertIn(expected, str(caught.exception))
 
     def test_the_display_picker_speaks_the_language(self) -> None:
         from elite_hud.overlay.hud import HudWindow

@@ -16,7 +16,7 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 from elite_hud.edsm import EDSM_BASE, EdsmClient, EdsmService, SystemFacts
 
@@ -128,7 +128,10 @@ class ClientTests(LocalServerTestCase):
         "/api-v1/system|Sagittarius A*": SAGITTARIUS_A,
         "/api-system-v1/traffic|Sagittarius A*": SAGITTARIUS_A_TRAFFIC,
         "/api-v1/system|Nowhere ZZ-Z z99-9": [],
-        "/api-v1/system|Broken": "not json at all",
+        # Bytes, not a string: the handler re-encodes non-bytes bodies as JSON, so
+        # a string here became a valid JSON string and the JSONDecodeError branch
+        # this route exists for was never entered.
+        "/api-v1/system|Broken": b"<html>not json",
     }
 
     def test_a_known_system_is_read_whole(self) -> None:
@@ -240,20 +243,35 @@ class ServiceTests(LocalServerTestCase):
                          "system + traffic, once each")
 
     def test_a_failed_lookup_is_retried_later(self) -> None:
-        """A failure must not be remembered as an answer."""
+        """A failure must not be remembered as an answer.
+
+        Checked by counting the requests the server actually received: asserting
+        only that no answer arrived and nothing was cached is equally true when the
+        second request is never sent, so forgetting to discard the name from the
+        asked-set -- the bug this test is named after -- went unnoticed.
+        """
+        self.seen.clear()
         service, answers = self._service()
         service.start()
         try:
             service.request("Not In The Server At All")
-            time.sleep(0.3)
-            self.assertEqual(answers, [])
+            self._wait_for_requests(1)
             service.request("Not In The Server At All")
-            time.sleep(0.3)
+            self._wait_for_requests(2)
         finally:
             service.stop()
-        # The log records both attempts; nothing was cached and nothing shown.
-        self.assertEqual(answers, [])
+        asked = [s for s in self.seen if "Not In The Server" in unquote_plus(s)]
+        self.assertEqual(len(asked), 2, f"the failure must be asked again: {self.seen}")
+        self.assertEqual(answers, [], "and nothing invented from it")
         self.assertIsNone(service.cached("Not In The Server At All"))
+
+    def _wait_for_requests(self, count: int, timeout: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if len(self.seen) >= count:
+                return True
+            time.sleep(0.02)
+        return False
 
     def test_disabled_means_no_requests_at_all(self) -> None:
         self.seen.clear()

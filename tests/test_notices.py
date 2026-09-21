@@ -45,12 +45,58 @@ def style_from(config: Config) -> NoticeStyle:
 
 def style_from_en() -> NoticeStyle:
     """The same style, in English."""
-    import elite_hud.i18n as i18n
-
     config = Config()
     config.overlay.language = "en"
     config.apply_language()
     return style_from(config)
+
+
+class OverlayWiringTests(unittest.TestCase):
+    """The style a notice is rendered with must be the one the overlay builds.
+
+    ``style_from`` here re-implements ``HudWindow.notice_style`` by hand, so none
+    of the tests above can see the overlay's own wiring: dropping
+    ``messages=self.config.messages`` from that method made an English config render
+    the docking line in Russian and left all of these green.
+    """
+
+    def _hud(self, language: str):
+        from PySide6.QtWidgets import QApplication
+
+        from tests.test_hud import QT_SKIP_REASON
+
+        if QT_SKIP_REASON:
+            self.skipTest(QT_SKIP_REASON)
+        QApplication.instance() or QApplication([])
+        from elite_hud.overlay.hud import HudWindow
+        from elite_hud.state import GameState
+
+        config = Config()
+        config.overlay.language = language
+        config.apply_language()
+        hud = HudWindow(config, GameState())
+        hud._available_width = lambda: 2560.0
+        self.addCleanup(hud.close)
+        return hud
+
+    def test_a_docking_refusal_reads_in_the_chosen_language(self) -> None:
+        hud = self._hud("en")
+        hud.push_notice(DockingNotice(station="Bainbridge Market", reason="Distance"))
+        self.assertEqual(
+            hud.notice_text(),
+            "Bainbridge Market: docking refused — too far from the station",
+        )
+
+    def test_and_in_russian_too(self) -> None:
+        hud = self._hud("ru")
+        hud.push_notice(DockingNotice(station="Bainbridge Market", reason="Distance"))
+        self.assertIn("стыковка запрещена", hud.notice_text())
+
+    def test_the_real_reason_table_reaches_the_bar(self) -> None:
+        """A reason added to the table must not be shown as a raw symbol."""
+        hud = self._hud("ru")
+        hud.push_notice(DockingNotice(station="X", reason="JumpImminent"))
+        self.assertEqual(hud.notice_text(), "X: стыковка запрещена — носитель вот-вот прыгнет")
 
 
 class DockingNoticeTests(unittest.TestCase):
@@ -67,22 +113,42 @@ class DockingNoticeTests(unittest.TestCase):
         self.assertEqual(rendered.glyph, "warning")
         self.assertEqual(rendered.colour, Config().overlay.warning)
 
+    #: Every reason the game sends, from a journal parser that enumerates them:
+    #: ed-journals 0.9.0, ``DockingDeniedReason``. This project's own journals
+    #: contain only Distance, so the list cannot be measured from them, and the
+    #: test that read the expectations out of the same table the code reads could
+    #: not notice a missing or invented reason either -- deleting Hostile from both
+    #: languages kept it green, and the shipped table had "Offline", which the game
+    #: never sends, while four real reasons were absent.
+    GAME_REASONS = {
+        "NoSpace": "все площадки заняты",
+        "TooLarge": "корабль слишком большой для площадки",
+        "Hostile": "станция враждебна",
+        "Offences": "есть неоплаченные штрафы",
+        "Distance": "слишком далеко от станции",
+        "ActiveFighter": "сначала верните истребитель на борт",
+        "RestrictedAccess": "нет разрешения на стыковку с этим носителем",
+        "JumpImminent": "носитель вот-вот прыгнет",
+        "NoReason": "причина не указана",
+    }
+
+    def test_the_reason_table_matches_the_reasons_the_game_sends(self) -> None:
+        self.assertEqual(Messages().docking_reasons, self.GAME_REASONS)
+
     def test_every_documented_reason_is_translated(self) -> None:
-        reasons = Messages().docking_reasons
-        for reason in reasons:
+        for reason, expected in self.GAME_REASONS.items():
             with self.subTest(reason=reason):
                 rendered = DockingNotice(station="X", reason=reason).render(self.style)
-                self.assertIn(reasons[reason], rendered.text)
+                self.assertEqual(
+                    rendered.text, f"X: стыковка запрещена — {expected}"
+                )
 
     def test_the_reasons_follow_the_language(self) -> None:
-        english = style_from_en()
-        rendered = DockingNotice(station="X", reason="Distance").render(english)
+        english = Messages(**ENGLISH_MESSAGES).docking_reasons
+        self.assertEqual(set(english), set(self.GAME_REASONS), "the same reasons")
+        self.assertEqual(english["JumpImminent"], "the carrier is about to jump")
+        rendered = DockingNotice(station="X", reason="Distance").render(style_from_en())
         self.assertEqual(rendered.text, "X: docking refused — too far from the station")
-        # And the same table has an entry for every reason the game can send.
-        self.assertEqual(
-            set(Messages().docking_reasons),
-            set(Messages(**ENGLISH_MESSAGES).docking_reasons),
-        )
 
     def test_an_unknown_reason_is_quoted_rather_than_guessed(self) -> None:
         """A reason we do not know must not be turned into a plausible one."""
