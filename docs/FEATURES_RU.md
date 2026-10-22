@@ -126,7 +126,7 @@
 
 ## 9. Конфигурация
 
-Разделы: `[journal]`, `[overlay]`, `[materials]`, `[edsm]`, `[carrier]`,
+Разделы: `[journal]`, `[overlay]`, `[materials]`, `[edsm]`, `[hub]`, `[carrier]`,
 `[commander]`, `[update]`, `[logging]`, `[overlay.labels]`.
 
 Новый файл всегда создаётся в `%APPDATA%\elite-hud\config.toml`, а не рядом с

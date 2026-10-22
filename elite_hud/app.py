@@ -31,6 +31,7 @@ from .config import (
 )
 from .edsm import EdsmService, SystemFacts
 from .installation import SingleInstanceGuard
+from .hub import HubClient
 from .journal.watcher import JournalWatcher
 from .paths import expand_user_path, find_journal_dir
 from .state import GameState, parse_timestamp
@@ -271,6 +272,8 @@ class HudApp:
         self.instance: SingleInstanceGuard | None = None
         self._exit_for_update = False
         self.watcher: JournalWatcher | None = None
+        self.hub: HubClient | None = None
+        self._hub_action = None
         self.replay: ReplaySource | None = None
         self.hud = None
         self.tray = None
@@ -305,6 +308,8 @@ class HudApp:
     # -- event plumbing ----------------------------------------------------
 
     def _on_journal_event(self, event: dict) -> None:
+        if self.hub is not None:
+            self.hub.offer(event)
         self.events.put(event)
 
     def _poll_status(self) -> None:
@@ -495,6 +500,8 @@ class HudApp:
         self._drain()
         self._drain_updates()
         self._drain_edsm()
+        if self._hub_action is not None:
+            self._hub_action.setText(self._hub_status_text())
         if self.hud is not None:
             self.hud.rebuild()
 
@@ -557,6 +564,8 @@ class HudApp:
             return
         log.info("watching %s", directory)
         self._start_status_reader(directory)
+        self.hub = HubClient(self.config.hub, journal_dir=Path(directory))
+        self.hub.start()
         self.watcher = JournalWatcher(
             directory,
             self._on_journal_event,
@@ -570,6 +579,8 @@ class HudApp:
     def stop_sources(self) -> None:
         if self.watcher is not None:
             self.watcher.stop()
+        if self.hub is not None:
+            self.hub.stop()
         if self.replay is not None:
             self.replay.stop()
 
@@ -582,6 +593,12 @@ class HudApp:
             self.hud = None
 
     # -- Qt ----------------------------------------------------------------
+
+    def _hub_status_text(self) -> str:
+        hub = self.hub
+        if hub is None or not self.config.hub.enabled:
+            return "KSSN Hub: выключен"
+        return f"KSSN Hub: {hub.last_status} · отправлено {hub.sent}"
 
     def _build_tray(self, app) -> None:
         from PySide6.QtGui import QActionGroup, QColor
@@ -619,6 +636,8 @@ class HudApp:
         self._build_monitor_menu(menu)
         menu.addSeparator()
         self._build_update_menu(menu, app)
+        self._hub_action = menu.addAction(self._hub_status_text())
+        self._hub_action.setEnabled(False)
         menu.addSeparator()
         self._build_language_menu(menu)
         menu.addSeparator()

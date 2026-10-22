@@ -264,6 +264,40 @@ class MaterialsConfig:
 
 
 @dataclass
+class HubConfig:
+    """Optional private KSSN Hub upload from the HUD.
+
+    Off by default: nothing leaves the machine until a device token is pasted
+    and ``enabled`` is set.  Only watched systems are sent; the server filters
+    again, so a stale list cannot leak a system the hub does not track.
+    """
+
+    enabled: bool = False
+    #: Base URL of the hub, without a trailing slash.
+    url: str = "https://kssn.space"
+    #: Device token created in the profile page or by ``flask create-device``.
+    token: str = ""
+    #: Seconds between queue checks and retry attempts.
+    poll_interval: float = 5.0
+    #: Maximum events in one journal batch.
+    batch_size: int = 50
+    timeout_seconds: float = 20.0
+    #: Presence heartbeat while the commander is in a watched system.
+    heartbeat_seconds: float = 60.0
+    #: How often the watched-system list is refreshed.
+    systems_refresh_minutes: float = 30.0
+    #: Ignore events older than this at startup, so a 7-day replay does not
+    #: upload a week of history. 0 uploads everything the watcher sees.
+    history_seconds: int = 3600
+    #: Send only systems in the hub's watched list.
+    filter_systems: bool = True
+    #: Read Market.json after docking and send it to the hub.
+    send_market: bool = True
+    #: Empty means ``%APPDATA%\elite-hud\hub-spool.jsonl``.
+    spool: str = ""
+
+
+@dataclass
 class UpdateConfig:
     """Self-update from GitHub Releases."""
 
@@ -302,6 +336,7 @@ class Config:
     commander: CommanderConfig = field(default_factory=CommanderConfig)
     materials: MaterialsConfig = field(default_factory=MaterialsConfig)
     edsm: EdsmConfig = field(default_factory=EdsmConfig)
+    hub: HubConfig = field(default_factory=HubConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -353,6 +388,7 @@ class Config:
         _merge(config.commander, cls._table(raw, "commander"))
         _merge(config.materials, cls._table(raw, "materials"))
         _merge(config.edsm, cls._table(raw, "edsm"))
+        _merge(config.hub, cls._table(raw, "hub"))
         _merge(config.update, cls._table(raw, "update"))
         _merge(config.logging, cls._table(raw, "logging"))
 
@@ -386,6 +422,26 @@ class Config:
 
         self.journal.poll_interval = min(10.0, max(0.05, float(self.journal.poll_interval)))
         self.journal.history_days = max(0, int(self.journal.history_days))
+
+        hub = self.hub
+        hub.url = str(hub.url).strip().rstrip("/")
+        if hub.url and not hub.url.startswith(("http://", "https://")):
+            log.warning("hub.url %r is not http(s), disabling hub", hub.url)
+            hub.enabled = False
+        hub.token = str(hub.token).strip()
+        hub.poll_interval = min(60.0, max(1.0, float(hub.poll_interval)))
+        hub.batch_size = min(500, max(1, int(hub.batch_size)))
+        hub.timeout_seconds = min(120.0, max(3.0, float(hub.timeout_seconds)))
+        hub.heartbeat_seconds = min(3600.0, max(15.0, float(hub.heartbeat_seconds)))
+        hub.systems_refresh_minutes = min(
+            1440.0, max(1.0, float(hub.systems_refresh_minutes))
+        )
+        hub.history_seconds = max(0, int(hub.history_seconds))
+        if hub.enabled and (not hub.token or not hub.url):
+            log.warning(
+                "hub.enabled is true but hub.token or hub.url is empty; disabling hub"
+            )
+            hub.enabled = False
 
         update = self.update
         if update.mode not in VALID_UPDATE_MODES:
@@ -459,6 +515,7 @@ class Config:
             ("commander", self.commander),
             ("materials", self.materials),
             ("edsm", self.edsm),
+            ("hub", self.hub),
             ("update", self.update),
             ("logging", self.logging),
         ):
@@ -508,6 +565,7 @@ HIDDEN_FROM_FILE: dict[str, frozenset[str]] = {
     "commander": frozenset({"mission_capacity"}),
     "materials": frozenset(),
     "edsm": frozenset({"timeout_seconds"}),
+    "hub": frozenset({"token", "poll_interval", "timeout_seconds"}),
     "update": frozenset({
         "token", "asset", "timeout_seconds", "keep_downloads", "include_prerelease",
     }),

@@ -86,3 +86,18 @@ file = ""
 [exobiology.values]
 # Override individual species payouts when Frontier rebalances them.
 # "Stratum Tectonicas" = 19010800
+
+[hub]
+# Приватный штаб KSSN. Токен создаётся в профиле kssn.space или командой
+# flask create-device. Пока enabled = false, HUD никуда ничего не отправляет.
+enabled = false
+url = "https://kssn.space"
+token = ""
+poll_interval = 5.0
+batch_size = 50
+timeout_seconds = 20.0
+heartbeat_seconds = 60.0
+systems_refresh_minutes = 30.0
+history_seconds = 3600
+filter_systems = true
+send_market = true
