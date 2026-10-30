@@ -1,6 +1,6 @@
 # KSSN Hub — штаб эскадрильи Korolev Star Syndicate
 
-> Статус: в реализации, версия 0.7 · 22.10.2026  
+> Статус: в реализации, версия 0.8 · 28.10.2026  
 > Домен: `kssn.space` · Связанный продукт: `elite-hud`  
 > Документ описывает продукт, архитектуру, данные и этапы реализации.  
 > Код: [kssn-hub](../kssn-hub/README.md) — этапы 1–3 и плейбуки этапа 4.  
@@ -730,6 +730,8 @@ ORM, Redis-клиентов, Celery и Node-сборки.
 | Галактика | `system_snapshots` | `system_id64`, `captured_at`, `traffic`, `carrier_count`, `faction_count`, `data` |
 | Рынок | `commodities` | `id`, `symbol`, `name`, `category`, `avg_price` |
 | Рынок | `market_snapshots` | `id`, `station_id`, `system_id64`, `captured_at`, `source`, `data` (TEXT JSON), `received_at`; UNIQUE `(station_id, captured_at)` |
+| Рынок | `commodities` | `id`, `symbol` UNIQUE, `name`, `category`, `mean_price` |
+| Рынок | `market_quotes` | `station_id`, `commodity_id`, `buy_price`, `sell_price`, `stock`, `demand`, `stock_bracket`, `demand_bracket`, `captured_at`, `source`, `updated_at`; PK `(station_id, commodity_id)` |
 | Рынок | `market_prices` | `station_id`, `commodity_id`, `buy_price`, `sell_price`, `demand`, `stock`, `observed_at`, `source` |
 | Трафик | `traffic_samples` | `system_id64`, `captured_at`, `source`, `day`, `week`, `total`, `ships` (TEXT JSON) |
 | Флот | `carriers` | `carrier_id` PK, `callsign`, `name`, `owner_user_id`, `system_id64`, `station`, `jump_target`, `departure_time`, `cargo`, `capacity`, `reserved`, `fuel`, `services`, `docking_access`, `updated_at` |
@@ -1447,15 +1449,17 @@ API и игровые обновления могут сдвинуть срок�
 
 **v1.0** — R0–R7. Ориентир — 14–15 недель.
 
-### 11.3. Статус на 22.10.2026
+### 11.3. Статус на 28.10.2026
 
 | Этап | Статус |
 |---|---|
-| **Этап 1 — Фундамент** | Каркас Flask + SQLite, вход, роли, CSRF, scrypt, админка, аудит, 84 теста, systemd/Caddy — готово в коде. На VDS ещё не развёрнуто. |
+| **Этап 1 — Фундамент** | Каркас Flask + SQLite, вход, роли, CSRF, scrypt, админка, аудит, 94 теста, systemd/Caddy — развёрнуто на VDS `kssn.space`. |
 | **Этап 2 — Системы, станции, фракции** | Seed, ручной реестр, Spansh + EDSM синхронизация, `station_observations`, классификация, `faction_observations`, фракции/состояния, `/situation`, импорт журналов, очередь и `/admin/data` готовы. Остались EDDN и живой приём HUD. |
-| **Этап 3 — HUD → штаб** | Device-токены, `elite_hud/hub.py`, приём журналов, presence и рыночные снимки готовы. Остались мастер подключения, HUD summary и UI рынка. |
+| **Этап 3 — HUD → штаб** | Device-токены, `elite_hud/hub.py`, приём журналов, presence и рыночные снимки готовы; добавлен EDMC-плагин как независимый fallback. Осталась диагностика конкретных клиентов. |
 | **Этап 4 — состояния и плейбуки** | Стартовые 17 плейбуков, советы в системе, страница «Плейбуки», редактор, версии и откат готовы. Алерты и обратная связь — остаток. |
-| **Этапы 5–8** | Не начаты. |
+| **Этап 5 — рынок и маршруты** | `Market.json` → товары/котировки, страницы рынка, одиночные, внутрисистемные и межсистемные циклы, Boom-режим T&E готовы. История цен, EDDN и контракты — остаток. |
+| **Этап 6 — активность** | Трафик эскадрильи и EDSM, флотоносцы, продажи/миссии/CargoDepot и вклад до настраиваемого тика BGS. |
+| **Этапы 7–8** | Не начаты. |
 
 Код: [kssn-hub/README.md](../kssn-hub/README.md). Деплой на VDS — следующий
 практический шаг после проверки интерфейса и создания первого администратора.

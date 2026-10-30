@@ -28,7 +28,20 @@ from .config import HubConfig, user_config_dir
 
 log = logging.getLogger(__name__)
 
-EVENT_TYPES = {"FSDJump", "Location", "Docked", "Undocked", "CarrierJump"}
+EVENT_TYPES = {
+    "FSDJump",
+    "Location",
+    "Docked",
+    "Undocked",
+    "CarrierJump",
+    "MarketSell",
+    "MissionCompleted",
+    "MissionFailed",
+    "MissionAbandoned",
+    "CargoDepot",
+    "CarrierLocation",
+    "CarrierStats",
+}
 USER_AGENT = "elite-hud-hub/1.0 (+https://kssn.space)"
 
 
@@ -72,23 +85,110 @@ FACTION_FIELDS = (
     "RecoveringStates",
 )
 
+TRADE_FIELDS = (
+    "event",
+    "timestamp",
+    "MarketID",
+    "Type",
+    "Type_Localised",
+    "Count",
+    "SellPrice",
+    "BuyPrice",
+    "TotalSale",
+    "TotalCost",
+    "AvgPricePaid",
+)
+MISSION_FIELDS = (
+    "event",
+    "timestamp",
+    "Faction",
+    "Name",
+    "LocalisedName",
+    "MissionID",
+    "Reward",
+    "Donation",
+    "Donated",
+    "CommodityReward",
+    "FactionEffects",
+)
+CARGO_FIELDS = (
+    "event",
+    "timestamp",
+    "MissionID",
+    "UpdateType",
+    "CargoType",
+    "CargoType_Localised",
+    "Count",
+    "ItemsCollected",
+    "ItemsDelivered",
+    "TotalItemsToDeliver",
+    "Progress",
+    "StartMarketID",
+    "EndMarketID",
+)
+CARRIER_FIELDS = (
+    "event",
+    "timestamp",
+    "CarrierID",
+    "CarrierType",
+    "Callsign",
+    "Name",
+    "DockingAccess",
+    "StarSystem",
+    "SystemAddress",
+    "BodyID",
+)
+EVENT_FIELDS = {
+    "MarketSell": TRADE_FIELDS,
+    "MissionCompleted": MISSION_FIELDS,
+    "MissionFailed": MISSION_FIELDS,
+    "MissionAbandoned": MISSION_FIELDS,
+    "CargoDepot": CARGO_FIELDS,
+    "CarrierLocation": CARRIER_FIELDS,
+    "CarrierStats": CARRIER_FIELDS,
+}
+
+
+def _nested(value, allowed):
+    if not isinstance(value, list):
+        return value
+    return [
+        {key: item.get(key) for key in allowed if key in item}
+        for item in value
+        if isinstance(item, dict)
+    ]
+
 
 def sanitize_event(event: dict) -> dict:
     """Strip personal journal fields before they leave the machine."""
+    event_type = str(event.get("event") or "")
+    fields = EVENT_FIELDS.get(event_type, SAFE_FIELDS)
     data = {}
-    for key in SAFE_FIELDS:
+    for key in fields:
         if key not in event:
             continue
         value = event[key]
         if key == "Factions" and isinstance(value, list):
-            data[key] = [
-                {field: faction.get(field) for field in FACTION_FIELDS if field in faction}
-                for faction in value
-                if isinstance(faction, dict)
-            ]
-        elif key == "SystemFaction" and isinstance(value, dict):
-            data[key] = {"Name": value.get("Name")}
-        elif key == "StationFaction" and isinstance(value, dict):
+            data[key] = _nested(value, FACTION_FIELDS)
+        elif key == "FactionEffects" and isinstance(value, list):
+            effects = []
+            for effect in value:
+                if not isinstance(effect, dict):
+                    continue
+                item = {
+                    name: effect.get(name)
+                    for name in ("Faction", "Effects", "Influence", "ReputationTrend", "Reputation")
+                    if name in effect
+                }
+                item["Effects"] = _nested(item.get("Effects"), ("Effect", "Effect_Localised", "Trend"))
+                item["Influence"] = _nested(
+                    item.get("Influence"), ("SystemAddress", "Trend", "Influence")
+                )
+                effects.append(item)
+            data[key] = effects
+        elif key == "CommodityReward" and isinstance(value, list):
+            data[key] = _nested(value, ("Name", "Name_Localised", "Count"))
+        elif key in {"SystemFaction", "StationFaction"} and isinstance(value, dict):
             data[key] = {"Name": value.get("Name")}
         else:
             data[key] = value
@@ -225,6 +325,10 @@ class HubClient:
             # The server checks again. Sending before the first list arrives
             # means a fresh HUD does not lose the Location event that starts
             # the session; nothing outside the watched list is stored.
+            return True
+        if event.get("SystemAddress") is None:
+            # Commerce and mission events do not always carry the system;
+            # the server resolves MarketID / FactionEffects instead.
             return True
         try:
             return int(event.get("SystemAddress")) in self._systems

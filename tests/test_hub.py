@@ -146,3 +146,55 @@ class HubMarketTests(unittest.TestCase):
             self.assertEqual(len(posted), 1)
             self.assertEqual(posted[0][0], "/api/v1/ingest/market")
             self.assertEqual(posted[0][1]["station_id"], 1)
+
+
+def test_sanitize_sale_mission_and_carrier_events():
+    from elite_hud.hub import EVENT_TYPES, sanitize_event
+
+    assert {"MarketSell", "MissionCompleted", "CargoDepot", "CarrierLocation"} <= EVENT_TYPES
+    sale = sanitize_event(
+        {
+            "event": "MarketSell",
+            "timestamp": "2026-10-28T10:00:00Z",
+            "MarketID": 4315152643,
+            "Type": "gold",
+            "Type_Localised": "Золото",
+            "Count": 10,
+            "SellPrice": 5000,
+            "TotalSale": 50000,
+            "Credits": 99999999,
+        }
+    )
+    assert sale["TotalSale"] == 50000
+    assert "Credits" not in sale
+    mission = sanitize_event(
+        {
+            "event": "MissionCompleted",
+            "timestamp": "2026-10-28T10:00:00Z",
+            "Faction": "Traders & Explorers Inc.",
+            "Name": "Mission_Delivery_name",
+            "MissionID": 123,
+            "Reward": 100000,
+            "FactionEffects": [
+                {
+                    "Faction": "Traders & Explorers Inc.",
+                    "Influence": [{"SystemAddress": 1, "Trend": "UpGood", "Influence": "++"}],
+                    "Reputation": 100,
+                }
+            ],
+            "Credits": 99999999,
+        }
+    )
+    assert mission["FactionEffects"][0]["Influence"][0]["SystemAddress"] == 1
+    assert "Credits" not in mission
+    carrier = sanitize_event(
+        {
+            "event": "CarrierStats",
+            "CarrierID": 1,
+            "Callsign": "KSS0",
+            "Name": "Test",
+            "Finance": {"CarrierBalance": 1},
+        }
+    )
+    assert carrier["Callsign"] == "KSS0"
+    assert "Finance" not in carrier

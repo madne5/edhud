@@ -135,6 +135,22 @@ token = "kssn_..."
 
 ---
 
+## EDMC-плагин KSSN Hub
+
+Если HUD не подключается, есть независимый fallback — плагин для
+EDMarketConnector:
+
+* папка: [`edmc-kssn-hub/`](edmc-kssn-hub/);
+* готовая сборка: [`kssn-hub-edmc.zip`](edmc-kssn-hub/kssn-hub-edmc.zip);
+* отправляет журнал, presence и `Market.json`;
+* не требует HUD и сторонних Python-пакетов.
+
+Установка: распаковать в
+`%LOCALAPPDATA%\EDMarketConnector\plugins\kssn_hub`, затем включить в
+**EDMC → Settings → KSSN Hub** и вставить device-токен.
+
+---
+
 ## Управление
 
 Всё через значок в трее, рядом с часами. **Клик** по значку скрывает и показывает
