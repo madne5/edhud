@@ -88,6 +88,9 @@ FACTION_FIELDS = (
 TRADE_FIELDS = (
     "event",
     "timestamp",
+    "StarSystem",
+    "SystemAddress",
+    "StationName",
     "MarketID",
     "Type",
     "Type_Localised",
@@ -101,6 +104,9 @@ TRADE_FIELDS = (
 MISSION_FIELDS = (
     "event",
     "timestamp",
+    "StarSystem",
+    "SystemAddress",
+    "StationName",
     "Faction",
     "Name",
     "LocalisedName",
@@ -114,6 +120,9 @@ MISSION_FIELDS = (
 CARGO_FIELDS = (
     "event",
     "timestamp",
+    "StarSystem",
+    "SystemAddress",
+    "StationName",
     "MissionID",
     "UpdateType",
     "CargoType",
@@ -287,9 +296,16 @@ class HubClient:
         self._observe(event)
         if event.get("event") not in EVENT_TYPES:
             return
-        if not self._allowed(event):
+        payload = dict(event)
+        if payload.get("SystemAddress") is None and self.system_id is not None:
+            payload["SystemAddress"] = self.system_id
+        if payload.get("StarSystem") is None and self.system_name:
+            payload["StarSystem"] = self.system_name
+        if payload.get("StationName") is None and self.station:
+            payload["StationName"] = self.station
+        if not self._allowed(payload):
             return
-        self._append(sanitize_event(event))
+        self._append(sanitize_event(payload))
         self._wake.set()
 
     # -- event filter ------------------------------------------------------
@@ -300,7 +316,7 @@ class HubClient:
             self.ship = str(event.get("Ship") or self.ship)
             self.game_mode = str(event.get("GameMode") or self.game_mode)
             return
-        if name in {"FSDJump", "Location", "CarrierJump", "Docked"}:
+        if name in {"StartUp", "FSDJump", "Location", "CarrierJump", "Docked"}:
             try:
                 self.system_id = int(event.get("SystemAddress"))
             except (TypeError, ValueError):
